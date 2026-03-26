@@ -1,6 +1,6 @@
-An agent has analyzed the baseline NKI kernel with a list of optimization plans.
-Please concretize the optimization plan and optimize the `kernel` function.
-Only use existing NKI APIs in the baseline kernel. Do not invent new APIs even if the optimization plan suggests it.
+An agent has analyzed the baseline STeP IR kernel with a list of optimization plans.
+Please concretize the optimization plan and optimize the `build_graph` function.
+Only use existing STeP operators and functions. Do not invent new operators even if the optimization plan suggests it.
 Don't use lower precision than the baseline kernel even if the optimization plan suggests it.
 
 # Problem
@@ -8,18 +8,22 @@ Don't use lower precision than the baseline kernel even if the optimization plan
 {problem_code}
 ```
 
-# Baseline NKI kernel
+# Baseline STeP IR kernel
 ```
 {kernel_code}
 ```
 
 # Kernel usage
 ```
-if __name__ == "__main__":
-    inputs = get_inputs()
-    ref_output = forward(*inputs)
-    kernel_output = transform_nki_outputs(kernel(*transform_to_nki_inputs(inputs)), ref_output)
-    assert np.allclose(kernel_output, ref_output, atol=1e-4, rtol=1e-2)
+graph, output_op = build_graph()
+# Symbolic profiling:
+#   for node in graph.nodes():
+#       if isinstance(node, StepOps):
+#           total_off_chip += node.off_chip_traffic()
+#           total_on_chip += node.on_chip_requirement()
+#
+# Cycle-accurate profiling:
+#   cycles, ms, s = simulate(graph, ...)
 ```
 
 # Optimization plan
@@ -27,4 +31,5 @@ if __name__ == "__main__":
 {optimization_plan}
 ```
 
-Output the optimized `kernel` function wrapped in code block.
+Output ONLY the optimized `build_graph` function wrapped in a code block.
+Do NOT include imports, constants (M, K, N, SEED, etc.), or `compute_gold()` — these are provided externally.

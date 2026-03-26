@@ -3,40 +3,31 @@ import argparse
 import pandas as pd
 import json
 from accelopt.utils import get_case_name
-from accelopt.kernel_wrapper import NKIKernel
+from accelopt.step_kernel_wrapper import StepKernel, ProfileMode
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--summary_path", type=str, default="")
 parser.add_argument("--output_candidates_path", type=str, required=True)
 parser.add_argument("--output_profile_path", type=str, required=True)
-parser.add_argument("--save_fields_path", type=str, default="")
-parser.add_argument("--nc_id", type=int, default=0)
+parser.add_argument("--profile_mode", type=str, default="symbolic", choices=["symbolic", "cycle_accurate"])
 parser.add_argument("--mode", type=str, default="construct")
 args = parser.parse_args()
 
-nkibench_base_path = os.path.join(os.getenv("ACCELOPT_BASE_DIR"), "NKIBench")
+stepbench_base_path = os.path.join(os.getenv("ACCELOPT_BASE_DIR"), "StepBench")
 
 
 output_dict = []
 problems = [
-    "add_rmsnorm_matmul",
-    "matmul_add_rmsnorm",
-    "gqa_full",
-    "matmul",
-    "rmsnorm_matmul",
-    "rope_single_freq_apply",
-    "swiglu",
-    "silu",
-    "bmm",
-    "bmm_softmax",
-    "transpose_matmul",
-    "lora",
-    "adamw",
-    "mamba"
+    "gemm_square", "gemm_rectangular", "gemm_batched", "gemm_large_k",
+    "gemm_small_k", "gemm_3d", "relu", "sigmoid", "swish", "gelu",
+    "layernorm", "rmsnorm", "softmax", "sdpa", "flash_attention",
+    "gemm_silu", "gemm_gelu_softmax", "gemm_scale_residual",
+    "gemm_rmsnorm", "gemm_swish_groupnorm", "moe_gemm", "moe_full",
+    "mamba_ssm", "transformer_ffn", "transformer_layer",
 ]
 
 def construct_table():
-    base_summary_path = os.path.join(nkibench_base_path, "summary.json")
+    base_summary_path = os.path.join(stepbench_base_path, "summary.json")
     with open(base_summary_path, "r") as f:
         summary = json.load(f)
 
@@ -51,27 +42,30 @@ def construct_table():
                     "problem": problem_name,
                     "values": json.dumps(case_info["values"]),
                     "case_id": case_id,
-                    "task": os.path.join(nkibench_base_path, single_impl["task"]),
-                    "kernel": os.path.join(nkibench_base_path, single_impl["kernel"]),
+                    "task": os.path.join(stepbench_base_path, single_impl["task"]),
+                    "kernel": os.path.join(stepbench_base_path, single_impl["kernel"]),
                     "case_name": case_name,
                     "service_name": case_name + "_ID0"
-                } 
+                }
                 output_rows.append(row)
     output_df = pd.DataFrame(output_rows)
     output_df.to_csv(args.output_candidates_path, index=False)
 
 
 def construct_profile_table():
-    os.environ["NEURON_RT_VISIBLE_CORES"] = str(args.nc_id)
+    profile_mode = ProfileMode(args.profile_mode)
     df = pd.read_csv(args.output_candidates_path)
-    with open(args.save_fields_path, "r") as f:
-        save_fields = json.load(f)
     output_rows = []
     for index, row in df.iterrows():
-        nki_kernel = NKIKernel(row["kernel"], row["task"])
-        nki_kernel.rel_tol = 3e-5 if "mamba" in row["problem"] else 2e-5
-        nki_kernel.profile(save_fields)
-        profile_data = {"profile": json.dumps(nki_kernel.res.metadata)}
+        with open(row["kernel"], "r") as f:
+            step_code = f.read()
+        step_kernel = StepKernel(
+            step_code=step_code,
+            problem_path=row["task"],
+            profile_mode=profile_mode,
+        )
+        props = step_kernel.profile()
+        profile_data = {"profile": json.dumps(props.metadata)}
         output_rows.append({**row, **profile_data})
     output_df = pd.DataFrame(output_rows)
     output_df.to_csv(args.output_profile_path, index=False)
@@ -86,6 +80,3 @@ if __name__ == "__main__":
         construct_profile_table()
     else:
         raise ValueError(f"Invalid mode: {args.mode}")
-    
-    
-    

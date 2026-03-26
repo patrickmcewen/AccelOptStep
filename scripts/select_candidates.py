@@ -27,10 +27,13 @@ if __name__ == "__main__":
                 continue
             branch_id = get_branch_id(k)
             if not "speedup" in v.keys() or v["speedup"] is None:
+                baseline_meta = json.loads(v.get("baseline_metadata", "{}"))
+                baseline_latency = baseline_meta.get("cycles", float("inf"))
                 candidates.setdefault(case_name, {}).setdefault((service_name, branch_id), []).append({
                     "body": v["baseline"],
                     "spec_code": v["spec_code"],
-                    "latency": v["baseline_latency"],
+                    "latency": baseline_latency,
+                    "profile": v.get("baseline_metadata", "{}"),
                     "problem": v["problem"],
                     "values": v["values"],
                     "old_service_name": service_name,
@@ -38,15 +41,17 @@ if __name__ == "__main__":
                     "priority": float("inf"),
                 })
             else:
+                cycles = v["cycles"]
                 candidates.setdefault(case_name, {}).setdefault((service_name, branch_id), []).append({
                     "body": v["body"],
                     "spec_code": v["spec_code"],
-                    "latency": v["latency"],
+                    "latency": cycles,
+                    "profile": v.get("kernel_metadata", "{}"),
                     "problem": v["problem"],
                     "values": v["values"],
                     "old_service_name": service_name,
                     "plan_id": k,
-                    "priority": v["latency"],
+                    "priority": cycles,
                 })
             
     # First select the best representative for each (service_name, branch_id)
@@ -81,7 +86,8 @@ if __name__ == "__main__":
                 "problem": item["problem"],
                 "values": item["values"],
                 "plan_id": item["plan_id"],
-                "case_name": case_name
+                "case_name": case_name,
+                "profile": item["profile"],
             })
     output_path = f"{output_base_path}/candidates.csv"
     output_df = pd.DataFrame(output_dict)

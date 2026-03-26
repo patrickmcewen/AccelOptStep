@@ -1,6 +1,6 @@
 EXP_DATE=$1
 EXP_BASE_DIR=$2
-NC_ID=$3
+PROFILE_MODE=$3
 MAX_THRESHOLD=$4
 MIN_THRESHOLD=$5
 TOPK=$6
@@ -51,10 +51,9 @@ start_time="$(timestamp)"
 
 EXEC="$ACCELOPT_BASE_DIR/scripts/sequential_profile.py"
 CANDIDATES_PATH="$EXP_DIR/candidates/candidates.csv"
-SAVE_FIELDS_PATH="$ACCELOPT_BASE_DIR/prompts/profile_list.json"
 OUTPUT_PATH="$EXP_DIR/candidates/profile_results.csv"
 
-python $EXEC --candidates_path $CANDIDATES_PATH --save_fields_path $SAVE_FIELDS_PATH --output_path $OUTPUT_PATH --nc_id $NC_ID --rel_tol $REL_TOL
+python $EXEC --candidates_path $CANDIDATES_PATH --output_path $OUTPUT_PATH --profile_mode $PROFILE_MODE --rel_tol $REL_TOL
 
 end_time="$(timestamp)"
 printf "%s,%s\n" "${start_time}" "${end_time}" >> "${EXP_DIR}/profile_candidates_start_end_time.txt"

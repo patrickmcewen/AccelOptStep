@@ -1,0 +1,430 @@
+# STeP Operator Reference
+
+## Shape Notation
+
+All streams have shape `(1, d0, d1, ..., dN)` where the leading `1` is implicit.
+Tile dtype is written as `Tile(rows, cols)`. Shape transformations show how
+input shape maps to output shape.
+
+---
+
+## Data Movement Operators
+
+### OffChipLoad — Load tiles from HBM
+```python
+OffChipLoad(
+    underlying=torch.Tensor,       # Source tensor
+    stride=(s0, s1, ...),          # Stride per output dimension (0 = broadcast)
+    out_shape_tiled=(d0, d1, ...), # Output stream shape (in tiles)
+    tile_row=int,                  # Tile height
+    tile_col=int,                  # Tile width
+    par_dispatch=int,              # Load parallelism (typically 4)
+    mock_bf16=False,
+)
+```
+**Shape rule:** Output stream shape = `(1,) + out_shape_tiled`, dtype = `Tile(tile_row, tile_col)`
+
+**Stride convention:** `stride[i]` = number of tiles to advance in the underlying tensor when dimension `i` of `out_shape_tiled` increments by 1. Use `0` for broadcast dimensions (same data reused across that dimension).
+
+**Example — GEMM input loading:**
+```python
+# x is (M, K), tiled into (M//tm, N//tn, K//tk) for weight-stationary GEMM
+# stride: M-dim advances by K//tk tiles, N-dim broadcast (0), K-dim advances by 1
+x_load = OffChipLoad(
+    underlying=x,
+    stride=(K // tile_k, 0, 1),
+    out_shape_tiled=(M // tile_m, N // tile_n, K // tile_k),
+    tile_row=tile_m, tile_col=tile_k, par_dispatch=4,
+)
+# Stream: shape=(1, M//tm, N//tn, K//tk), dtype=Tile(tm, tk)
+```
+
+### OffChipStore — Store tiles to HBM (sink, no output stream)
+```python
+OffChipStore(
+    graph=MultiDiGraph,
+    input=StepOps,
+    par_dispatch=int,
+    store_file_name="output",      # Name for simulation output files
+)
+```
+
+---
+
+## Compute Operators
+
+### BinaryMap — Element-wise binary operation
+```python
+BinaryMap(graph, in1, in2, fn=map_fn.X(), write_back_mu=bool, compute_bw=int)
+```
+**Shape rule:** Output shape = `in1.shape`. Both inputs must have matching static dimensions.
+**Tile dtype:** Result of `fn.apply(in1_tile, in2_tile)` — e.g., Div on `Tile(64,128)` / `Tile(64,1)` → `Tile(64,128)`.
+
+### UnaryMap — Element-wise unary operation
+```python
+UnaryMap(graph, input, fn=map_fn.X(), write_back_mu=bool, compute_bw=int)
+```
+**Shape rule:** Output shape = input shape.
+**Tile dtype:** Result of `fn.apply(input_tile)` — e.g., RowWiseSum on `Tile(64,64)` → `Tile(64,1)`.
+
+### BinaryMapAccum — Binary op with reduction (GEMM)
+```python
+BinaryMapAccum(graph, in1, in2, fn, init_fn, rank, write_back_mu, compute_bw)
+```
+**Shape rule:** Output shape = `in1.shape[:-rank]`. Removes the last `rank` dimensions (reduction).
+**CRITICAL:** `in1.shape == in2.shape` — both inputs must have identical shapes.
+**Tile dtype:** Result of `fn.apply(in1_tile, in2_tile)` — e.g., Matmul on `Tile(tm,tk)` @ `Tile(tk,tn)` → `Tile(tm,tn)`.
+**init_fn shape** must match the output tile shape.
+
+**Example — GEMM with K-reduction:**
+```python
+# in1: shape=(1, M//tm, N//tn, K//tk), tile=Tile(tm, tk)
+# in2: shape=(1, M//tm, N//tn, K//tk), tile=Tile(tk, tn)
+# rank=1 removes last dim (K//tk)
+matmul = BinaryMapAccum(graph, in1=x_load, in2=w_load,
+    fn=map_accum_fn.Matmul(),
+    init_fn=init_fn.Zero(shape=(tile_m, tile_n), dtype=Float32()),
+    rank=1, write_back_mu=False, compute_bw=4096)
+# Output: shape=(M//tm, N//tn), tile=Tile(tm, tn)
+```
+
+### Accum — Reduction/accumulation
+```python
+Accum(graph, input, output_stream_dtype, fn, init_fn, accum_rank, write_back_mu, compute_bw)
+```
+**Shape rule:** Output shape = `input.shape[:-accum_rank]`. Removes the last `accum_rank` dimensions.
+**Tile dtype:** Explicitly provided via `output_stream_dtype` parameter (not inferred).
+
+**Example — sum over seq_k tiles:**
+```python
+# input: shape=(outer, seq_q, seq_k), tile=Tile(64, 64)
+row_sum = Accum(graph, input=exp_qkt,
+    output_stream_dtype=Tile(tile_dtype=Float32(), shape=(64, 64)),
+    fn=accum_fn.Add(),
+    init_fn=init_fn.Zero(shape=(64, 64), dtype=Float32()),
+    accum_rank=1, write_back_mu=False, compute_bw=4096)
+# Output: shape=(outer, seq_q), tile=Tile(64, 64)
+```
+
+---
+
+## Shape Transformation Operators
+
+### Promote — Insert size-1 dimension
+```python
+Promote(graph, input, promote_rank=int)
+```
+**Shape rule:** Inserts a `1` at position `len(shape) - promote_rank` from the left.
+
+**Example:**
+```python
+# input shape: (2, 3)
+# promote_rank=1 → insert 1 at position len-1 = 1 → (2, 1, 3)
+# promote_rank=2 → insert 1 at position len-2 = 0 → (1, 2, 3)
+```
+
+### ExpandRef — Expand size-1 dims to match reference
+```python
+ExpandRef(graph, input, ref, expand_rank=int)
+```
+**Shape rule:** Output shape = `ref.shape`. The last `expand_rank` dims of input must be `1`.
+**Constraint:** `input.shape[:-expand_rank] == ref.shape[:-expand_rank]` (outer dims match).
+
+### RepeatStatic — Append a new innermost dimension
+```python
+RepeatStatic(graph, input, repeat_factor=int)
+```
+**Shape rule:** Output shape = `input.shape + (repeat_factor,)`. Adds one dimension.
+
+### Flatten — Merge adjacent dimensions
+```python
+Flatten(graph, input, min_rank=int, max_rank=int)
+```
+**Shape rule:** Merges dimensions at rank positions `min_rank` through `max_rank` (counting from the right, 0-indexed) into a single dimension whose size is the product of the merged sizes.
+
+### Reshape — Split a dimension into two
+```python
+Reshape(graph, input, chunk_size=int, reshape_rank=int, write_back_mu=bool, add_outer_dim=False, pad_fn=None)
+```
+**Shape rule:** Splits dimension at `rank - reshape_rank` into `(ceil(dim/chunk_size), chunk_size)`.
+**Constraint:** If `reshape_rank != 0`, the dimension must be evenly divisible by `chunk_size`.
+
+---
+
+## Data Reuse Operators
+
+### Bufferize — Capture stream into on-chip ring buffer
+```python
+Bufferize(graph, input, rank=int, off_chip=False)
+```
+**Shape rule:** Output shape = `input.shape[:-rank]`. The last `rank` dimensions are absorbed into a Buffer.
+**Dtype change:** `Tile(r,c)` → `Buffer(buff_dtype=Tile(r,c), shape=input.shape[-rank:])`.
+**Constraint:** Input must be Tile dtype.
+
+### Streamify — Read buffer back as a stream
+```python
+Streamify(graph, input, repeat_factor=[int, ...], rank=int, off_chip=False)
+```
+**Shape rule:** Output shape = `input.shape + tuple(repeat_factor) + buffer_shape`.
+Where `buffer_shape` = the shape stored in the Buffer dtype.
+**Dtype change:** `Buffer(Tile(r,c), shape=(...))` → `Tile(r,c)` (unwraps the buffer).
+**Constraint:** Input must be Buffer dtype (output of Bufferize).
+
+**CRITICAL — Bufferize/Streamify shape math:**
+
+The output of Streamify must match the shape of the other stream it will be paired with.
+Here is the shape flow:
+
+```
+Input stream:  shape = (1, d0, d1, ..., dN)
+                                    ^^^^^^^ last `rank` dims
+Bufferize(rank=R):
+  Output:      shape = (1, d0, ..., d(N-R))
+               dtype = Buffer(Tile, shape=(d(N-R+1), ..., dN))
+
+Streamify(repeat_factor=[r0, r1, ...]):
+  Output:      shape = (1, d0, ..., d(N-R)) + (r0, r1, ...) + (d(N-R+1), ..., dN)
+               dtype = Tile (unwrapped)
+```
+
+To get the **same shape as the original stream**, use `repeat_factor=[]` (empty list).
+To **add new dimensions** for broadcasting, include them in `repeat_factor`.
+
+**Example — WRONG (shape mismatch):**
+```python
+# x_load: shape=(1, 2, 2, 2), tile=Tile(128,128)
+x_buf = Bufferize(graph, x_load, rank=2)
+# x_buf: shape=(1, 2), dtype=Buffer(Tile(128,128), shape=(2, 2))
+
+x_stream = Streamify(graph, x_buf, repeat_factor=[2], rank=2)
+# x_stream: shape=(1, 2) + (2,) + (2, 2) = (1, 2, 2, 2, 2) ← RANK 4!
+# w_load:   shape=(1, 2, 2, 2)                                ← RANK 3
+# BinaryMapAccum FAILS: shapes don't match!
+```
+
+**Example — CORRECT (buffer one dim, replay for reuse):**
+```python
+# Goal: buffer weight tiles and replay them for each M-tile.
+# w_load: shape=(1, M//tm, N//tn, K//tk), tile=Tile(tk, tn)
+# We want to buffer over (N//tn, K//tk) and replay for each M-tile.
+
+w_buf = Bufferize(graph, w_load, rank=2, off_chip=False)
+# w_buf: shape=(1, M//tm), dtype=Buffer(Tile(tk,tn), shape=(N//tn, K//tk))
+
+w_stream = Streamify(graph, w_buf, repeat_factor=[], rank=2, off_chip=False)
+# w_stream: shape=(1, M//tm) + () + (N//tn, K//tk) = (1, M//tm, N//tn, K//tk)
+# Now matches x_load shape — BinaryMapAccum works!
+```
+
+### DynStreamify — Dynamic streamify from buffer
+```python
+DynStreamify(graph, input, ref, repeat_rank=int, bufferized_rank=int, off_chip=False)
+```
+**Shape rule:** Output shape = `ref.shape + buffer_shape`.
+Output dtype = unwrapped Tile from Buffer.
+**Constraint:** Input must be Buffer dtype. Last `repeat_rank + 1` dims of input must be `1`.
+
+---
+
+## Multi-Consumer Operators
+
+### Broadcast — Replicate stream for multiple consumers
+```python
+Broadcast(graph, input, num_consumers=int)
+```
+**Shape rule:** Each output has same shape as input. Creates `num_consumers` copies.
+**Access:** `(broadcast, 0)`, `(broadcast, 1)`, etc.
+
+### Parallelize — Split stream across parallel consumers
+```python
+Parallelize(graph, input, parallelize_rank=int, num_consumers=int, switch_cycles=None, write_back_mu=False)
+```
+**Shape rule:** Divides outermost dimension by `num_consumers`. Each output: `(shape[0]//num_consumers,) + shape[1:]`.
+**Constraint:** `parallelize_rank == input.rank`. Outermost dim must be divisible by `num_consumers`.
+**Access:** `(parallelize, 0)`, `(parallelize, 1)`, etc.
+
+### EagerMerge — Merge multiple streams
+```python
+EagerMerge(graph, inputs=[op0, op1, ...], input_rank=int)
+```
+**Shape rule:** Data output: `(sum_of_dim0s,) + inputs[0].shape[1:]` — concatenates outermost dim.
+Also produces select output: `(sum_of_dim0s,)`, dtype=MultiHot.
+**Access:** `eager_merge.data_tuple()`, `eager_merge.select_tuple()`.
+
+### FlatPartition — Dynamic routing to N consumers (MoE)
+```python
+FlatPartition(graph, input, control, partition_rank=int, switch_cycles=[int,...], write_back_mu=bool, num_consumers=int)
+```
+**Shape rule:** Each output: `(DynDim,) + input.shape[-partition_rank:]` — outermost becomes dynamic.
+**Access:** `(flat_partition, 0)`, `(flat_partition, 1)`, etc.
+
+### FlatReassemble — Reassemble partitioned streams
+```python
+FlatReassemble(graph, inputs=[...], control, reassemble_rank=int, switch_cycles=[int,...], write_back_mu=bool)
+```
+**Shape rule:** Output shape = `control.shape + (DynDim,) + inputs[0].shape[-reassemble_rank:]`.
+
+### RetileStreamify — Split tiles along row or column
+```python
+RetileStreamify(graph, input, split_row=bool, filter_mask=False)
+```
+**Shape rule (split_row=True):** Last dim becomes `last_dim * tile_rows`. Tile becomes `Tile(1, tile_cols)`.
+**Shape rule (split_row=False):** Last dim becomes `last_dim * tile_cols`. Tile becomes `Tile(tile_rows, 1)`.
+If `filter_mask=True`, last dim becomes DynDim.
+
+---
+
+## Available Functions
+
+### map_fn (for BinaryMap, UnaryMap)
+- `map_fn.Matmul(weight_transposed=False)` — `Tile(M,K) @ Tile(K,N) → Tile(M,N)`
+- `map_fn.Add()` — element-wise add, same tile shape
+- `map_fn.Mul()` — element-wise multiply, same tile shape
+- `map_fn.Div()` — element-wise divide, broadcasts `Tile(M,1)` denominator
+- `map_fn.Silu()` — SiLU activation, same tile shape
+- `map_fn.Exp()` — exponential, same tile shape
+- `map_fn.RowWiseSum()` — `Tile(M,N) → Tile(M,1)` (reduce columns)
+- `map_fn.RowWiseAppend()` — append rows
+- `map_fn.DynMatmul(weight_transposed=False)` — dynamic shape matmul
+
+### map_accum_fn (for BinaryMapAccum)
+- `map_accum_fn.Matmul(weight_transposed=False)` — `Tile(M,K) @ Tile(K,N) → Tile(M,N)`
+- `map_accum_fn.Matmul(weight_transposed=True)` — `Tile(M,K) @ Tile(N,K)^T → Tile(M,N)`
+- `map_accum_fn.DynMatmul(weight_transposed=False)` — dynamic matmul with accumulation
+
+### accum_fn (for Accum)
+- `accum_fn.Add()` — sum tiles element-wise
+- `accum_fn.Mul()` — multiply tiles element-wise
+- `accum_fn.RetileRow()` — retile along rows during accumulation
+
+### init_fn (for BinaryMapAccum, Accum)
+- `init_fn.Zero(shape=(rows, cols), dtype=Float32())` — initialize to zeros
+- `init_fn.Empty(shape=(rows, cols), dtype=Float32())` — uninitialized (use when first write overwrites entirely)
+
+---
+
+## Composition Patterns (from verified baselines)
+
+### Pattern 1: Weight-Stationary GEMM — C = A @ B
+```python
+# A is (M, K), B is (K, N). Tiles: (tile_m, tile_k), (tile_k, tile_n).
+# Both loads have out_shape_tiled=(M//tm, N//tn, K//tk) — last dim is reduction.
+
+a_load = OffChipLoad(underlying=A,
+    stride=(K//tk, 0, 1),          # M advances, N broadcast, K advances
+    out_shape_tiled=(M//tm, N//tn, K//tk),
+    tile_row=tm, tile_col=tk, par_dispatch=4)
+# Shape: (1, M//tm, N//tn, K//tk), Tile(tm, tk)
+
+b_load = OffChipLoad(underlying=B,
+    stride=(0, 1, N//tn),          # M broadcast, N advances, K advances
+    out_shape_tiled=(M//tm, N//tn, K//tk),
+    tile_row=tk, tile_col=tn, par_dispatch=4)
+# Shape: (1, M//tm, N//tn, K//tk), Tile(tk, tn)
+
+# rank=1 reduces K//tk dimension
+matmul = BinaryMapAccum(graph, a_load, b_load,
+    fn=map_accum_fn.Matmul(),
+    init_fn=init_fn.Zero(shape=(tm, tn), dtype=Float32()),
+    rank=1, write_back_mu=True, compute_bw=4096)
+# Shape: (M//tm, N//tn), Tile(tm, tn)
+
+output = OffChipStore(graph, matmul, par_dispatch=4, store_file_name="output")
+```
+
+### Pattern 2: Fused GEMM + Activation — y = SiLU(x @ W)
+```python
+# Same loads as Pattern 1, but write_back_mu=False keeps GEMM output on-chip.
+
+matmul = BinaryMapAccum(graph, x_load, w_load,
+    fn=map_accum_fn.Matmul(),
+    init_fn=init_fn.Zero(shape=(tm, tn), dtype=Float32()),
+    rank=1, write_back_mu=False, compute_bw=4096)
+# Shape: (M//tm, N//tn), Tile(tm, tn) — stays on-chip
+
+silu = UnaryMap(graph, matmul, fn=map_fn.Silu(),
+    write_back_mu=True, compute_bw=4096)
+# Shape: (M//tm, N//tn), Tile(tm, tn) — written to HBM
+
+output = OffChipStore(graph, silu, par_dispatch=4, store_file_name="output")
+```
+
+### Pattern 3: Attention — softmax(Q @ K^T) @ V
+```python
+# Q: (outer, seq, dim), K: (outer, seq, dim), V: (outer*seq, dim)
+# tile_seq=64, tile_dim=128. outer=batch*heads.
+
+# Step 1: QK^T — accumulate over dim
+q_load = OffChipLoad(underlying=Q,
+    stride=(seq_tiles * dim_tiles, dim_tiles, 0, 1),
+    out_shape_tiled=(outer, seq_tiles, seq_tiles, dim_tiles),
+    tile_row=tile_seq, tile_col=tile_dim, par_dispatch=4)
+# Shape: (1, outer, sq, sk, dk), Tile(tsq, tdim)
+
+k_load = OffChipLoad(underlying=K,
+    stride=(seq_tiles * dim_tiles, 0, dim_tiles, 1),
+    out_shape_tiled=(outer, seq_tiles, seq_tiles, dim_tiles),
+    tile_row=tile_seq, tile_col=tile_dim, par_dispatch=4)
+# Shape: (1, outer, sq, sk, dk), Tile(tsq, tdim)
+
+qkt = BinaryMapAccum(graph, q_load, k_load,
+    fn=map_accum_fn.Matmul(weight_transposed=True),
+    init_fn=init_fn.Zero(shape=(tile_seq, tile_seq), dtype=Float32()),
+    rank=1, write_back_mu=False, compute_bw=4096)
+# Shape: (outer, sq, sk), Tile(tsq, tsq)
+
+# Step 2: Exp and broadcast to 2 consumers
+exp_qkt = UnaryMap(graph, qkt, fn=map_fn.Exp(),
+    write_back_mu=False, compute_bw=4096)
+exp_bc = Broadcast(graph, exp_qkt, num_consumers=2)
+# Each output: shape=(outer, sq, sk), Tile(tsq, tsq)
+
+# Step 3: Exp(QK^T) @ V — accumulate over seq_k
+v_load = OffChipLoad(underlying=V_2d,
+    stride=(seq_tiles, 0, 1),
+    out_shape_tiled=(outer, seq_tiles, seq_tiles),
+    tile_row=tile_seq, tile_col=dim, par_dispatch=4)
+# Shape: (1, outer, sq, sk), Tile(tsq, dim)
+
+mult_v = BinaryMapAccum(graph, (exp_bc, 0), v_load,
+    fn=map_accum_fn.Matmul(),
+    init_fn=init_fn.Zero(shape=(tile_seq, dim), dtype=Float32()),
+    rank=1, write_back_mu=False, compute_bw=4096)
+# Shape: (outer, sq), Tile(tsq, dim)
+
+# Step 4: Row sums for softmax denominator
+tile_sum = Accum(graph, (exp_bc, 1),
+    output_stream_dtype=Tile(tile_dtype=Float32(), shape=(tile_seq, tile_seq)),
+    fn=accum_fn.Add(),
+    init_fn=init_fn.Zero(shape=(tile_seq, tile_seq), dtype=Float32()),
+    accum_rank=1, write_back_mu=False, compute_bw=4096)
+# Shape: (outer, sq), Tile(tsq, tsq)
+
+row_sum = UnaryMap(graph, tile_sum, fn=map_fn.RowWiseSum(),
+    write_back_mu=False, compute_bw=4096)
+# Shape: (outer, sq), Tile(tsq, 1)
+
+# Step 5: Divide — normalize
+result = BinaryMap(graph, mult_v, row_sum,
+    fn=map_fn.Div(), write_back_mu=True, compute_bw=4096)
+# Shape: (outer, sq), Tile(tsq, dim)
+
+output = OffChipStore(graph, result, par_dispatch=4, store_file_name="output")
+```
+
+### Pattern 4: Data Reuse with Bufferize/Streamify
+```python
+# Goal: Load weight once, reuse for multiple input tiles.
+# w_load: shape=(1, M//tm, N//tn, K//tk), Tile(tk, tn)
+
+# Buffer the inner 2 dims (N and K tiling)
+w_buf = Bufferize(graph, w_load, rank=2, off_chip=False)
+# Shape: (1, M//tm), Buffer(Tile(tk,tn), shape=(N//tn, K//tk))
+
+# Replay with no extra dims — empty repeat_factor
+w_stream = Streamify(graph, w_buf, repeat_factor=[], rank=2, off_chip=False)
+# Shape: (1, M//tm) + () + (N//tn, K//tk) = (1, M//tm, N//tn, K//tk)
+# Dtype: Tile(tk, tn) — same as original, ready for BinaryMapAccum
+
+# Now pair with x_load that has the same shape
+```

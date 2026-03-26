@@ -1,0 +1,3 @@
+[submodule "step_artifact"]
+	path = step_artifact
+	url = https://github.com/stanford-ppl/step_artifact.git

@@ -1,13 +1,12 @@
-EXP_DATE=$1 
-EXP_BASE_DIR=$2 
+EXP_DATE=$1
+EXP_BASE_DIR=$2
 EXPERIENCE_LIST_PATH=$3
-NC_ID=$4
+PROFILE_MODE=$4
 BREADTH=$5
 NUM_SAMPLES=$6
 EXP_N=$7
 PROJECT_NAME=$8
-REL_TOL=$9
-ORG_NAME="${10}"
+ORG_NAME=$9
 
 EXP_DIR=$EXP_BASE_DIR/$EXP_DATE
 cd $EXP_DIR
@@ -40,9 +39,8 @@ python $PLANNER_EXEC --output_path $PLANNER_OUTPUT_PATH --breadth $BREADTH --exp
 SINGLE_EXECUTOR_EXEC="$ACCELOPT_BASE_DIR/scripts/executor.py"
 EXECUTOR_BASE_PROMPT_PATH="$ACCELOPT_BASE_DIR/prompts/executor_prompts/base_prompt.txt"
 EXECUTOR_USER_TEMPLATE_PATH="$ACCELOPT_BASE_DIR/prompts/executor_prompts/user_prompt_template.txt"
-SAVE_FIELDS_PATH="$ACCELOPT_BASE_DIR/prompts/profile_list.json"
 EXECUTOR_MODEL_CONFIG_PATH="$EXP_BASE_DIR/configs/executor_config.json"
 EXECUTOR_LOG_OUTPUT_PATH="$EXP_DIR/executor_results.json"
-python $SINGLE_EXECUTOR_EXEC --num_samples $NUM_SAMPLES --problems_path $PLANNER_PROFILE_RESULT_PATH --extractor_output_path $PLANNER_OUTPUT_PATH --exp_dir $EXP_DIR --base_prompt_path $EXECUTOR_BASE_PROMPT_PATH --user_template_path $EXECUTOR_USER_TEMPLATE_PATH --save_fields_path $SAVE_FIELDS_PATH --model_config_path $EXECUTOR_MODEL_CONFIG_PATH --nc_id $NC_ID --output_path $EXECUTOR_LOG_OUTPUT_PATH --exp_date $EXP_DATE --rel_tol $REL_TOL
+python $SINGLE_EXECUTOR_EXEC --num_samples $NUM_SAMPLES --problems_path $PLANNER_PROFILE_RESULT_PATH --extractor_output_path $PLANNER_OUTPUT_PATH --exp_dir $EXP_DIR --base_prompt_path $EXECUTOR_BASE_PROMPT_PATH --user_template_path $EXECUTOR_USER_TEMPLATE_PATH --model_config_path $EXECUTOR_MODEL_CONFIG_PATH --profile_mode $PROFILE_MODE --output_path $EXECUTOR_LOG_OUTPUT_PATH --exp_date $EXP_DATE
 
 cd $EXP_BASE_DIR
