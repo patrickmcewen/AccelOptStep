@@ -36,12 +36,14 @@ class StepKernel:
         step_code: str,
         problem_path: str,
         profile_mode: ProfileMode = ProfileMode.CYCLE_ACCURATE,
+        dims: dict | None = None,
         hbm_config: dict | None = None,
         sim_config: dict | None = None,
     ):
         self.step_code = step_code
         self.problem_path = problem_path
         self.profile_mode = profile_mode
+        self.dims = dims
         self.hbm_config = hbm_config or {
             "addr_offset": 64,
             "channel_num": 32,
@@ -108,7 +110,10 @@ class StepKernel:
         os.unlink(tmp_path)
 
         assert hasattr(mod, "build_graph"), "Generated code must define build_graph()"
-        graph, output_op = mod.build_graph()
+        if self.dims is not None:
+            graph, output_op = mod.build_graph(self.dims)
+        else:
+            graph, output_op = mod.build_graph()
         return mod, graph, output_op
 
     def _symbolic_profile(self, graph: MultiDiGraph) -> dict:
@@ -167,10 +172,21 @@ class StepKernel:
             "duration_s": duration_s,
         }
 
-        if not hasattr(mod, "compute_gold"):
+        # Get compute_gold: prefer problem file (new API), fall back to baseline (old API)
+        gold_source = mod
+        gold_args = ()
+        if self.dims is not None and self.problem_path:
+            problem_spec = importlib.util.spec_from_file_location("problem_mod", self.problem_path)
+            problem_mod = importlib.util.module_from_spec(problem_spec)
+            problem_spec.loader.exec_module(problem_mod)
+            if hasattr(problem_mod, "compute_gold"):
+                gold_source = problem_mod
+                gold_args = (self.dims,)
+
+        if not hasattr(gold_source, "compute_gold"):
             os.chdir(orig_dir)
             result["correct"] = False
-            result["correctness_error"] = "Generated code missing compute_gold()"
+            result["correctness_error"] = "No compute_gold() found in problem or baseline"
             return result
 
         store_name = output_op.store_file_name
@@ -183,7 +199,7 @@ class StepKernel:
         os.chdir(orig_dir)
 
         sim_tensor = torch.from_numpy(sim_output).float()
-        gold = mod.compute_gold().float()
+        gold = gold_source.compute_gold(*gold_args).float()
 
         if sim_tensor.shape != gold.shape:
             result["correct"] = False

@@ -1,3 +1,5 @@
+import math
+
 import torch
 from networkx import MultiDiGraph
 
@@ -10,28 +12,10 @@ from step_py.ops import (
 from rewrite.broadcast import infer_broadcast
 
 
-#batch, heads, seq, dim = 32, 32, 512, 1024
-batch, heads, seq, dim = 1, 1, 64, 128
 SEED = 42
 
 
-def compute_gold():
-    """PyTorch reference: softmax(Q @ K^T) @ V (simplified, no scaling)."""
-    outer = batch * heads
-    torch.manual_seed(SEED)
-    Q = torch.randn(outer, seq, dim, dtype=torch.float32)
-    K = torch.randn(outer, seq, dim, dtype=torch.float32)
-    V_2d = torch.randn(outer * seq, dim, dtype=torch.float32)
-    V = V_2d.view(outer, seq, dim)
-
-    qkt = Q @ K.transpose(-2, -1)  # (outer, seq, seq)
-    exp_qkt = torch.exp(qkt)
-    attn_v = exp_qkt @ V  # (outer, seq, dim)
-    denom = exp_qkt.sum(dim=-1, keepdim=True)  # (outer, seq, 1)
-    return (attn_v / denom).view(outer * seq, dim)
-
-
-def build_graph():
+def build_graph(dims):
     """Scaled dot-product attention: softmax(Q @ K^T / sqrt(d)) @ V.
 
     Q, K, V: (batch=32, heads=32, seq=512, dim=1024).
@@ -42,6 +26,10 @@ def build_graph():
     For the Exp(QK^T) @ V step, V is loaded with tile_col=dim (full head dimension
     in one tile column) so that seq_k can be the accumulation (last) dimension.
     """
+    batch = dims["batch"]
+    heads = dims["heads"]
+    seq = dims["seq"]
+    dim = dims["dim"]
     outer = batch * heads
     tile_seq = 64
     tile_dim = 128
@@ -54,7 +42,7 @@ def build_graph():
     graph = MultiDiGraph()
 
     torch.manual_seed(SEED)
-    Q_tensor = torch.randn(outer, seq, dim, dtype=torch.float32)
+    Q_tensor = torch.randn(outer, seq, dim, dtype=torch.float32) / math.sqrt(dim)
     K_tensor = torch.randn(outer, seq, dim, dtype=torch.float32)
     # V stored as 2D (outer*seq, dim) so we can tile with tile_col=dim
     V_tensor_2d = torch.randn(outer * seq, dim, dtype=torch.float32)

@@ -1,3 +1,5 @@
+# Origin: /home/ubuntu/patrick/AbstractOpt/KernelBench/KernelBench/level2/99_Matmul_GELU_Softmax.py
+# Notes: Direct copy, identical code and dimensions
 import torch
 import torch.nn as nn
 
@@ -15,12 +17,16 @@ class Model(nn.Module):
         x = torch.nn.functional.softmax(x, dim=1)
         return x
 
-batch_size = 1024
-in_features = 8192
-out_features = 8192
+SEED = 42
 
-def get_inputs():
-    return [torch.rand(batch_size, in_features)]
+def get_inputs(dims):
+    torch.manual_seed(SEED)
+    return [torch.randn(dims["batch_size"], dims["in_features"])]
 
-def get_init_inputs():
-    return [in_features, out_features]
+def get_init_inputs(dims):
+    return [dims["in_features"], dims["out_features"]]
+
+def compute_gold(dims):
+    model = Model(*get_init_inputs(dims))
+    inputs = get_inputs(dims)
+    return model(*inputs)

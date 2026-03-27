@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'set +eu' RETURN 2>/dev/null || true
 
 # =============================================================================
 # AccelOptStep — One-time container setup
@@ -56,7 +57,7 @@ echo ""
 
 # ── Install accelopt + all Python deps ───────────────────────────────────────
 echo "[2/5] Installing accelopt and Python dependencies..."
-pip install -e "$SCRIPT_DIR" aiohttp 2>&1 | tail -5
+pip install -e "$SCRIPT_DIR" aiohttp pyyaml 2>&1 | tail -5
 echo "      Done."
 echo ""
 

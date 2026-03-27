@@ -1,3 +1,5 @@
+# Origin: /home/ubuntu/patrick/AbstractOpt/KernelBench/KernelBench/level2/37_Matmul_Swish_Sum_GroupNorm.py
+# Notes: Direct copy, identical code
 import torch
 import torch.nn as nn
 
@@ -24,14 +26,16 @@ class Model(nn.Module):
         x = self.group_norm(x)
         return x
 
-batch_size = 32768
-in_features = 1024
-out_features = 4096
-num_groups = 64
-bias_shape = (out_features,)
+SEED = 42
 
-def get_inputs():
-    return [torch.rand(batch_size, in_features)]
+def get_inputs(dims):
+    torch.manual_seed(SEED)
+    return [torch.randn(dims["batch_size"], dims["in_features"])]
 
-def get_init_inputs():
-    return [in_features, out_features, num_groups, bias_shape]
+def get_init_inputs(dims):
+    return [dims["in_features"], dims["out_features"], dims["num_groups"], (dims["out_features"],)]
+
+def compute_gold(dims):
+    model = Model(*get_init_inputs(dims))
+    inputs = get_inputs(dims)
+    return model(*inputs)

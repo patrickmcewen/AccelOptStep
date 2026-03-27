@@ -1,3 +1,5 @@
+# Origin: /home/ubuntu/patrick/AbstractOpt/KernelBench/KernelBench/level1/97_ScaledDotProductAttention.py
+# Notes: Direct copy
 import torch
 import torch.nn as nn
 
@@ -9,16 +11,20 @@ class Model(nn.Module):
         out = torch.nn.functional.scaled_dot_product_attention(Q, K, V)
         return out
 
-batch_size = 32
-num_heads = 32
-sequence_length = 512
-embedding_dimension = 1024
+SEED = 42
 
-def get_inputs():
-    Q = torch.rand(batch_size, num_heads, sequence_length, embedding_dimension)
-    K = torch.rand(batch_size, num_heads, sequence_length, embedding_dimension)
-    V = torch.rand(batch_size, num_heads, sequence_length, embedding_dimension)
+def get_inputs(dims):
+    torch.manual_seed(SEED)
+    batch, heads, seq, dim = dims["batch"], dims["heads"], dims["seq"], dims["dim"]
+    Q = torch.randn(batch, heads, seq, dim)
+    K = torch.randn(batch, heads, seq, dim)
+    V = torch.randn(batch, heads, seq, dim)
     return [Q, K, V]
 
-def get_init_inputs():
+def get_init_inputs(dims):
     return []
+
+def compute_gold(dims):
+    model = Model(*get_init_inputs(dims))
+    inputs = get_inputs(dims)
+    return model(*inputs)

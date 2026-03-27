@@ -2,6 +2,32 @@ import json
 import pandas as pd
 import os
 from accelopt.utils import init_service_name
+import logging
+
+STEP_PREAMBLE = """\
+import torch
+import torch.nn as nn
+from networkx import MultiDiGraph
+from step_py.ops import (
+    OffChipLoad, OffChipStore, BinaryMap, UnaryMap, BinaryMapAccum,
+    Accum, Flatten, Reshape, Promote, ExpandRef,
+    Bufferize, Streamify, DynStreamify, RetileStreamify,
+    FlatPartition, FlatReassemble, Broadcast, RepeatStatic,
+    EagerMerge, Parallelize,
+    DynOffChipLoad, RandomOffChipLoad, RandomOffChipStore,
+)
+from step_py.utility_ops import (
+    PrinterContext, ConsumerContext, SelectGen,
+    FilterLastTile, MetadataGen, ExpertAddrGen,
+)
+from step_py.functions import map_fn, map_accum_fn, accum_fn, init_fn
+from step_py.datatype import Tile, DynTile, Stream, Float16, Float32, Uint32, Uint64, Bool, MultiHot, Index, Select, Buffer, DynDim
+from rewrite.broadcast import infer_broadcast
+
+SEED = 42
+"""
+
+logger = logging.getLogger(__name__)
 
 def get_branch_id(plan_name):
     return plan_name.split("_")[1]
@@ -12,7 +38,22 @@ if __name__ == "__main__":
     parser.add_argument("--executor_results_path", type=str, required=True)
     parser.add_argument("--output_base_path", type=str, required=True)
     parser.add_argument("--topk", type=int, default=1)
+    parser.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
     args = parser.parse_args()
+
+    if args.log_file:
+        from pathlib import Path
+        _root = logging.getLogger()
+        for _h in _root.handlers[:]:
+            if isinstance(_h, logging.FileHandler):
+                _h.close()
+                _root.removeHandler(_h)
+        _handler = logging.FileHandler(Path(args.log_file))
+        _handler.setLevel(logging.INFO)
+        _handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"))
+        _root.addHandler(_handler)
+        _root.setLevel(logging.INFO)
+
     with open(args.executor_results_path, "r") as f:
         executor_results = json.load(f)
 
@@ -73,9 +114,11 @@ if __name__ == "__main__":
         for item in candidates_items:
             new_service_name = init_service_name(case_name)
             body_path = f"{output_base_path}/{new_service_name}_{item['old_service_name']}_{item['plan_id']}_body.py"
-            numpy_path = f"{output_base_path}/{new_service_name}_{item['old_service_name']}_{item['plan_id']}_numpy.py"
+            numpy_path = f"{output_base_path}/{new_service_name}_{item['old_service_name']}_{item['plan_id']}_problem.py"
             with open(body_path, "w") as f:
                 body_code = item["body"]
+                if body_code.lstrip().startswith("def "):
+                    body_code = STEP_PREAMBLE + "\n" + body_code
                 f.write(body_code)
             with open(numpy_path, "w") as f:
                 f.write(item["spec_code"])

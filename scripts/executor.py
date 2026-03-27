@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 # -------------------------- STeP Import Preamble --------------------------
 STEP_IMPORTS = """
 import torch
+import torch.nn as nn
 from networkx import MultiDiGraph
 from step_py.ops import (
     OffChipLoad, OffChipStore, BinaryMap, UnaryMap, BinaryMapAccum,
@@ -41,11 +42,13 @@ from step_py.utility_ops import (
 from step_py.functions import map_fn, map_accum_fn, accum_fn, init_fn
 from step_py.datatype import Tile, DynTile, Stream, Float16, Float32, Uint32, Uint64, Bool, MultiHot, Index, Select, Buffer, DynDim
 from rewrite.broadcast import infer_broadcast
+
+SEED = 42
 """
 
 # -------------------------- Config Models --------------------------
 class ExecutorPromptConfig(BaseModel):
-    host_numpy_path: str = ""
+    host_problem_path: str = ""
     step_kernel_path: str = ""
     user_template_path: str = ""
     optimization_plan: str = ""
@@ -65,15 +68,15 @@ class ExecutorConfig(BaseModel):
 
 # -------------------------- Helpers --------------------------
 def construct_executor_prompt(config: ExecutorPromptConfig) -> str:
-    with open(config.host_numpy_path, "r") as f:
-        host_numpy_function = f.read()
+    with open(config.host_problem_path, "r") as f:
+        host_problem_function = f.read()
     with open(config.step_kernel_path, "r") as f:
         step_kernel_function = f.read()
     with open(config.user_template_path, "r") as f:
         prompt_template = f.read()
     user_prompt = (
         prompt_template
-        .replace("{problem_code}", host_numpy_function)
+        .replace("{problem_code}", host_problem_function)
         .replace("{kernel_code}", step_kernel_function)
         .replace("{optimization_plan}", config.optimization_plan)
     )
@@ -135,7 +138,7 @@ async def stage1_gather_proposals(service_name: str, pconfig: ExecutorPromptConf
     results = await asyncio.gather(*tasks, return_exceptions=True)
     return [r for r in results if isinstance(r, dict)]
 
-def _profile_worker(program_path, problem_path, profile_mode, result_path):
+def _profile_worker(program_path, problem_path, profile_mode, result_path, dims=None):
     """Profile a STeP kernel. Runs in a subprocess for isolation."""
     import json, traceback
     try:
@@ -145,7 +148,7 @@ def _profile_worker(program_path, problem_path, profile_mode, result_path):
             code = f.read()
 
         mode = ProfileMode.SYMBOLIC if profile_mode == "symbolic" else ProfileMode.CYCLE_ACCURATE
-        kernel = StepKernel(step_code=code, problem_path=problem_path, profile_mode=mode)
+        kernel = StepKernel(step_code=code, problem_path=problem_path, profile_mode=mode, dims=dims)
         result = kernel.profile()
 
         with open(result_path, "w") as f:
@@ -162,9 +165,9 @@ def _profile_worker(program_path, problem_path, profile_mode, result_path):
                 "metadata": {"compilation_error": traceback.format_exc()},
             }, f)
 
-def profile_with_hard_timeout_sync(program_path: str, problem_path: str, profile_mode: str, timeout_sec: int) -> dict:
+def profile_with_hard_timeout_sync(program_path: str, problem_path: str, profile_mode: str, timeout_sec: int, dims: dict | None = None) -> dict:
     fd, result_path = tempfile.mkstemp(prefix="step_profile_", suffix=".json"); os.close(fd)
-    p = mp.Process(target=_profile_worker, args=(program_path, problem_path, profile_mode, result_path), daemon=True)
+    p = mp.Process(target=_profile_worker, args=(program_path, problem_path, profile_mode, result_path, dims), daemon=True)
     p.start(); p.join(timeout_sec)
     try:
         if p.is_alive():
@@ -210,11 +213,13 @@ def stage2_profile_and_collect(
             start = time.monotonic()
             print(f"[Stage2] START name={name} case={base_spec['case_name']} timeout={per_profile_timeout}s")
             temp_path = _write_temp_kernel(code, base_spec["baseline_code"])
+            dims = json.loads(base_spec["values"]) if base_spec.get("values") else None
             kp = profile_with_hard_timeout_sync(
                 program_path=temp_path,
                 problem_path=base_spec.get("problem_path", ""),
                 profile_mode=case_config.profile_mode,
                 timeout_sec=per_profile_timeout,
+                dims=dims,
             )
 
             record_result = {
@@ -283,7 +288,7 @@ async def process_single_service_plan(
     base_spec: dict
 ):
     pconfig = ExecutorPromptConfig(
-        host_numpy_path=case_config.task_path,
+        host_problem_path=case_config.task_path,
         step_kernel_path=case_config.kernel_path,
         user_template_path=case_config.user_template_path,
         optimization_plan=case_config.optimization_plan,
@@ -427,6 +432,20 @@ if __name__ == "__main__":
     parser.add_argument("--output_path", type=str, required=True)
     parser.add_argument("--exp_date", type=str, required=True)
     parser.add_argument("--read_token", type=str, default="unused")  # For compatibility
+    parser.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
     args = parser.parse_args()
+
+    if args.log_file:
+        from pathlib import Path
+        _root = logging.getLogger()
+        for _h in _root.handlers[:]:
+            if isinstance(_h, logging.FileHandler):
+                _h.close()
+                _root.removeHandler(_h)
+        _handler = logging.FileHandler(Path(args.log_file))
+        _handler.setLevel(logging.INFO)
+        _handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"))
+        _root.addHandler(_handler)
+        _root.setLevel(logging.INFO)
 
     asyncio.run(main(args))

@@ -1,3 +1,5 @@
+# Origin: /home/ubuntu/patrick/AbstractOpt/KernelBench/KernelBench/level2/40_Matmul_Scaling_ResidualAdd.py
+# Notes: Direct copy, identical code
 import torch
 import torch.nn as nn
 
@@ -31,13 +33,16 @@ class Model(nn.Module):
         x = x + original_x
         return x
 
-batch_size = 16384
-in_features = 4096
-out_features = 4096
-scaling_factor = 0.5
+SEED = 42
 
-def get_inputs():
-    return [torch.rand(batch_size, in_features)]
+def get_inputs(dims):
+    torch.manual_seed(SEED)
+    return [torch.randn(dims["batch_size"], dims["in_features"])]
 
-def get_init_inputs():
-    return [in_features, out_features, scaling_factor]
+def get_init_inputs(dims):
+    return [dims["in_features"], dims["out_features"], dims["scaling_factor"]]
+
+def compute_gold(dims):
+    model = Model(*get_init_inputs(dims))
+    inputs = get_inputs(dims)
+    return model(*inputs)

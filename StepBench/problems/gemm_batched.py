@@ -1,3 +1,5 @@
+# Origin: /home/ubuntu/patrick/AbstractOpt/KernelBench/KernelBench/level1/3_Batched_matrix_multiplication.py
+# Notes: Direct copy, identical code and dimensions
 import torch
 import torch.nn as nn
 
@@ -21,15 +23,17 @@ class Model(nn.Module):
         """
         return torch.bmm(A, B)
 
-batch_size = 128
-m = 128 * 4
-k = 256 * 4
-n = 512 * 4
+SEED = 42
 
-def get_inputs():
-    A = torch.rand(batch_size, m, k)
-    B = torch.rand(batch_size, k, n)
-    return [A, B]
+def get_inputs(dims):
+    torch.manual_seed(SEED)
+    batch, M, K, N = dims["batch"], dims["M"], dims["K"], dims["N"]
+    return [torch.randn(batch, M, K), torch.randn(batch, K, N)]
 
-def get_init_inputs():
-    return []  # No special initialization inputs needed
+def get_init_inputs(dims):
+    return []
+
+def compute_gold(dims):
+    model = Model(*get_init_inputs(dims))
+    inputs = get_inputs(dims)
+    return model(*inputs)

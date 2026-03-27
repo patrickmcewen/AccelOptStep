@@ -1,4 +1,4 @@
-problem,values,case_id,task,kernel,case_name,service_name
-gemm_square,"{""M"": 4096, ""K"": 4096, ""N"": 4096}",0,/root/AccelOptStep/StepBench/problems/gemm_square.py,/root/AccelOptStep/StepBench/baselines/gemm_square.py,gemm_square_K4096_M4096_N4096,gemm_square_K4096_M4096_N4096_ID0
-gemm_silu,"{""M"": 2048, ""K"": 4096, ""N"": 4096}",0,/root/AccelOptStep/StepBench/problems/gemm_silu.py,/root/AccelOptStep/StepBench/baselines/gemm_silu.py,gemm_silu_K4096_M2048_N4096,gemm_silu_K4096_M2048_N4096_ID0
-sdpa,"{""batch"": 32, ""heads"": 32, ""seq"": 512, ""dim"": 1024}",0,/root/AccelOptStep/StepBench/problems/sdpa.py,/root/AccelOptStep/StepBench/baselines/sdpa.py,sdpa_batch32_dim1024_heads32_seq512,sdpa_batch32_dim1024_heads32_seq512_ID0
+problem,preset,values,task,kernel,case_name,service_name
+gemm,small,"{""M"": 256, ""K"": 256, ""N"": 256}",/root/AccelOptStep/StepBench/problems/gemm.py,/root/AccelOptStep/StepBench/baselines/gemm.py,gemm_K256_M256_N256,gemm_K256_M256_N256_ID0
+gemm_swish_scaling,small,"{""batch_size"": 128, ""in_features"": 256, ""out_features"": 256, ""scaling_factor"": 2.0}",/root/AccelOptStep/StepBench/problems/gemm_swish_scaling.py,/root/AccelOptStep/StepBench/baselines/gemm_swish_scaling.py,gemm_swish_scaling_batch_size128_in_features256_out_features256_scaling_factor2.0,gemm_swish_scaling_batch_size128_in_features256_out_features256_scaling_factor2.0_ID0
+sdpa,small,"{""batch"": 1, ""heads"": 1, ""seq"": 64, ""dim"": 128}",/root/AccelOptStep/StepBench/problems/sdpa.py,/root/AccelOptStep/StepBench/baselines/sdpa.py,sdpa_batch1_dim128_heads1_seq64,sdpa_batch1_dim128_heads1_seq64_ID0

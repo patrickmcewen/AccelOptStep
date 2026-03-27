@@ -9,6 +9,9 @@ import logfire
 import traceback
 import re
 import aiohttp
+import logging
+
+logger = logging.getLogger(__name__)
 
 class SummarizerPromptConfig(BaseModel):
     user_template_path: str
@@ -268,6 +271,20 @@ if __name__ == "__main__":
     parser.add_argument("--output_plan_ids_path", type=str, required=True)
     parser.add_argument("--output_speedups_path", type=str, required=True)
     parser.add_argument("--model_config_path", type=str, required=True)
+    parser.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
     args = parser.parse_args()
+
+    if args.log_file:
+        from pathlib import Path
+        _root = logging.getLogger()
+        for _h in _root.handlers[:]:
+            if isinstance(_h, logging.FileHandler):
+                _h.close()
+                _root.removeHandler(_h)
+        _handler = logging.FileHandler(Path(args.log_file))
+        _handler.setLevel(logging.INFO)
+        _handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"))
+        _root.addHandler(_handler)
+        _root.setLevel(logging.INFO)
 
     asyncio.run(main(args))

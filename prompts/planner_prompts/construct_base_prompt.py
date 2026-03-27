@@ -1,11 +1,28 @@
 import json
 import argparse
+import logging
+
+logger = logging.getLogger(__name__)
 
 args = argparse.ArgumentParser()
 args.add_argument("--original_base_prompt_path", type=str, required=True)
 args.add_argument("--summarizer_output_list_path", type=str, required=True)
 args.add_argument("--new_base_prompt_path", type=str, required=True)
+args.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
 args = args.parse_args()
+
+if args.log_file:
+    from pathlib import Path
+    _root = logging.getLogger()
+    for _h in _root.handlers[:]:
+        if isinstance(_h, logging.FileHandler):
+            _h.close()
+            _root.removeHandler(_h)
+    _handler = logging.FileHandler(Path(args.log_file))
+    _handler.setLevel(logging.INFO)
+    _handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"))
+    _root.addHandler(_handler)
+    _root.setLevel(logging.INFO)
 
 original_base_prompt_path = args.original_base_prompt_path
 summarizer_output_list_path = args.summarizer_output_list_path

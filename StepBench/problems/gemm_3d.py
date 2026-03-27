@@ -1,3 +1,5 @@
+# Origin: /home/ubuntu/patrick/AbstractOpt/KernelBench/KernelBench/level1/10_3D_tensor_matrix_multiplication.py
+# Notes: Direct copy, identical code and dimensions
 import torch
 import torch.nn as nn
 
@@ -21,15 +23,17 @@ class Model(nn.Module):
         """
         return torch.matmul(A, B)
 
-N = 16
-M = 1024
-K = 2048
-L = 768
+SEED = 42
 
-def get_inputs():
-    A = torch.rand(N, M, K)
-    B = torch.rand(K, L)
-    return [A, B]
+def get_inputs(dims):
+    torch.manual_seed(SEED)
+    N, M, K, L = dims["N"], dims["M"], dims["K"], dims["L"]
+    return [torch.randn(N, M, K), torch.randn(K, L)]
 
-def get_init_inputs():
-    return []  # No special initialization inputs needed
+def get_init_inputs(dims):
+    return []
+
+def compute_gold(dims):
+    model = Model(*get_init_inputs(dims))
+    inputs = get_inputs(dims)
+    return model(*inputs)

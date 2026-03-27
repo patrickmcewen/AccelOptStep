@@ -1,0 +1,58 @@
+# =============================================================================
+# AccelOptStep experiment configurations
+# =============================================================================
+# Usage:  python run_experiment.py --config config.yaml --preset <name>
+#
+# Each top-level key is a named preset. Keys not specified in a preset
+# fall back to the defaults below.
+
+# --- Defaults (inherited by all presets unless overridden) ---
+defaults:
+  project_name: pytorch-step
+  org_name: pmcewen
+  profile_mode: cycle_accurate
+  # step_artifact_src: /absolute/path/to/step_artifact/src
+  # exp_date_base: auto-generated as YYYY-MM-DD-HHMMSS if omitted
+  iters: 15            # optimization iterations after the first
+  breadth: 12          # parallel plans per problem per iteration
+  num_samples: 2       # code implementations per plan
+  topk_candidates: 6   # max candidates carried to next iteration (beam width)
+  topk: 8              # past experiences summarized into prompts
+  exp_n: 16            # experience items sampled for prompts
+  max_threshold: 1.04  # minimum speedup to count as positive (4%)
+  min_threshold: 1.15  # speedup for "strong positive" (15%)
+  rel_tol: 2.0e-5
+  benchmarks: all         # 'all' or list of names from bench_config.yaml, e.g. [gemm, sdpa]
+  presets: all            # 'all' or list of preset names, e.g. [small, square]
+  dry_run: false
+  logfire_enabled: true   # set to false to skip logfire setup (useful for local/test runs)
+
+# --- Presets ---
+
+full_run: {}  # uses all defaults as-is
+
+test_small_scale_run:
+  iters: 2
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+  benchmarks: [gemm, gemm_swish_scaling, sdpa]
+  presets: [small]
+
+# Example: run only GEMM square preset
+gemm_only:
+  benchmarks: [gemm]
+  presets: [square]
+
+# Example: run all baselines at small size for quick validation
+smoke_test:
+  benchmarks: all
+  presets: [small]
+  iters: 1
+  breadth: 1
+  num_samples: 1
+  dry_run: true

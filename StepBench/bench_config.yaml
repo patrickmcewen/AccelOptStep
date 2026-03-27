@@ -1,0 +1,146 @@
+# StepBench/bench_config.yaml
+# Central configuration for all benchmarks. Single source of truth for dimensions.
+
+gemm:
+  problem: problems/gemm.py
+  baseline: baselines/gemm.py
+  params: [M, K, N]
+  presets:
+    small:       {M: 256,   K: 256,    N: 256}
+    square:      {M: 4096,  K: 4096,   N: 4096}
+    rectangular: {M: 2048,  K: 8192,   N: 4096}
+    small_k:     {M: 32768, K: 64,     N: 32768}
+    large_k:     {M: 256,   K: 524288, N: 256}
+
+gemm_batched:
+  problem: problems/gemm_batched.py
+  baseline: null
+  params: [batch, M, K, N]
+  presets:
+    small:  {batch: 4,   M: 64,  K: 128,  N: 256}
+    medium: {batch: 128, M: 512, K: 1024, N: 2048}
+
+gemm_3d:
+  problem: problems/gemm_3d.py
+  baseline: null
+  params: [N, M, K, L]
+  presets:
+    small:   {N: 2,  M: 64,   K: 128,  L: 64}
+    default: {N: 16, M: 1024, K: 2048, L: 768}
+
+activation:
+  problem: problems/activation.py
+  baseline: null
+  params: [batch_size, dim, fn]
+  presets:
+    relu_small:    {batch_size: 256,  dim: 4096,   fn: relu}
+    relu_large:    {batch_size: 4096, dim: 393216,  fn: relu}
+    gelu_large:    {batch_size: 4096, dim: 393216,  fn: gelu}
+    sigmoid_large: {batch_size: 4096, dim: 393216,  fn: sigmoid}
+    swish_large:   {batch_size: 4096, dim: 393216,  fn: swish}
+    softmax_large: {batch_size: 4096, dim: 393216,  fn: softmax}
+
+layernorm:
+  problem: problems/layernorm.py
+  baseline: null
+  params: [batch_size, features, dim1, dim2]
+  presets:
+    small:   {batch_size: 2,  features: 8,  dim1: 32,  dim2: 32}
+    default: {batch_size: 16, features: 64, dim1: 256, dim2: 256}
+
+rmsnorm:
+  problem: problems/rmsnorm.py
+  baseline: null
+  params: [batch_size, features, dim1, dim2]
+  presets:
+    small:   {batch_size: 2,   features: 8,  dim1: 32,  dim2: 32}
+    default: {batch_size: 112, features: 64, dim1: 512, dim2: 512}
+
+gemm_gelu_softmax:
+  problem: problems/gemm_gelu_softmax.py
+  baseline: null
+  params: [batch_size, in_features, out_features]
+  presets:
+    small:   {batch_size: 64,   in_features: 512,  out_features: 512}
+    default: {batch_size: 1024, in_features: 8192, out_features: 8192}
+
+gemm_scale_batchnorm:
+  problem: problems/gemm_scale_batchnorm.py
+  baseline: null
+  params: [batch_size, in_features, out_features]
+  presets:
+    small:   {batch_size: 64,   in_features: 512,  out_features: 512}
+    default: {batch_size: 1024, in_features: 8192, out_features: 8192}
+
+gemm_scale_residual:
+  problem: problems/gemm_scale_residual.py
+  baseline: null
+  params: [batch_size, in_features, out_features, scaling_factor]
+  presets:
+    small:   {batch_size: 64,    in_features: 512,  out_features: 512,  scaling_factor: 0.5}
+    default: {batch_size: 16384, in_features: 4096, out_features: 4096, scaling_factor: 0.5}
+
+gemm_swish_scaling:
+  problem: problems/gemm_swish_scaling.py
+  baseline: baselines/gemm_swish_scaling.py
+  params: [batch_size, in_features, out_features, scaling_factor]
+  presets:
+    small:   {batch_size: 128, in_features: 256,   out_features: 256,   scaling_factor: 2.0}
+    default: {batch_size: 128, in_features: 32768, out_features: 32768, scaling_factor: 2.0}
+
+gemm_swish_groupnorm:
+  problem: problems/gemm_swish_groupnorm.py
+  baseline: null
+  params: [batch_size, in_features, out_features, num_groups]
+  presets:
+    small:   {batch_size: 64,    in_features: 128,  out_features: 512,  num_groups: 8}
+    default: {batch_size: 32768, in_features: 1024, out_features: 4096, num_groups: 64}
+
+gemm_groupnorm_swish_multiply_swish:
+  problem: problems/gemm_groupnorm_swish_multiply_swish.py
+  baseline: null
+  params: [batch_size, in_features, out_features, num_groups]
+  presets:
+    small:   {batch_size: 64,   in_features: 512,  out_features: 512,  num_groups: 32}
+    default: {batch_size: 1024, in_features: 8192, out_features: 8192, num_groups: 256}
+
+sdpa:
+  problem: problems/sdpa.py
+  baseline: baselines/sdpa.py
+  params: [batch, heads, seq, dim]
+  presets:
+    small:  {batch: 1,  heads: 1,  seq: 64,  dim: 128}
+    medium: {batch: 8,  heads: 8,  seq: 256, dim: 512}
+    large:  {batch: 32, heads: 32, seq: 512, dim: 1024}
+
+minigpt_block:
+  problem: problems/minigpt_block.py
+  baseline: null
+  params: [batch_size, seq_len, n_embd, n_head, max_seqlen]
+  presets:
+    small:   {batch_size: 4,   seq_len: 64,  n_embd: 128, n_head: 4, max_seqlen: 128}
+    default: {batch_size: 128, seq_len: 512, n_embd: 768, n_head: 8, max_seqlen: 1024}
+
+mamba2:
+  problem: problems/mamba2.py
+  baseline: null
+  params: [batch_size, seq_length, n_heads, d_head, d_state, block_len]
+  presets:
+    small:   {batch_size: 4,    seq_length: 64,  n_heads: 2, d_head: 16, d_state: 4,  block_len: 32}
+    default: {batch_size: 2048, seq_length: 128, n_heads: 8, d_head: 64, d_state: 16, block_len: 64}
+
+mlp:
+  problem: problems/mlp.py
+  baseline: null
+  params: [batch_size, input_size, layer_sizes, output_size]
+  presets:
+    small:   {batch_size: 16,  input_size: 256,   layer_sizes: [256, 256],     output_size: 128}
+    default: {batch_size: 128, input_size: 16384, layer_sizes: [16384, 16384], output_size: 8192}
+
+mlp_shallow_wide:
+  problem: problems/mlp_shallow_wide.py
+  baseline: null
+  params: [batch_size, input_size, hidden_layer_sizes, output_size]
+  presets:
+    small:   {batch_size: 16,  input_size: 256,   hidden_layer_sizes: [512, 512],     output_size: 256}
+    default: {batch_size: 128, input_size: 16384, hidden_layer_sizes: [32768, 32768], output_size: 16384}

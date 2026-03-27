@@ -1,6 +1,6 @@
 """End-to-end smoke tests for the AccelOptStep pipeline data flow.
 
-Verifies candidate collection, prompt construction, and summary.json format
+Verifies candidate collection, prompt construction, and bench_config.yaml format
 without requiring an LLM API key or Docker.
 """
 
@@ -79,24 +79,20 @@ def test_planner_prompt_construction():
         assert len(prompt_text) > 100, f"Prompt too short ({len(prompt_text)} chars)"
 
 
-def test_summary_json_format():
-    summary_path = os.path.join(ACCELOPT_BASE_DIR, "StepBench", "summary.json")
-    with open(summary_path, "r") as f:
-        summary = json.load(f)
+def test_bench_config_format():
+    from StepBench.loader import load_config
+    config = load_config()
 
-    assert len(summary) > 0, "summary.json is empty"
+    assert len(config) > 0, "bench_config.yaml is empty"
 
-    for problem_name, problem_info in summary.items():
-        assert "cases" in problem_info, f"{problem_name} missing 'cases'"
-        assert isinstance(problem_info["cases"], dict), f"{problem_name} 'cases' is not a dict"
+    for bench_name, bench_info in config.items():
+        assert "problem" in bench_info, f"{bench_name} missing 'problem'"
+        assert "params" in bench_info, f"{bench_name} missing 'params'"
+        assert "presets" in bench_info, f"{bench_name} missing 'presets'"
+        assert isinstance(bench_info["presets"], dict), f"{bench_name} 'presets' is not a dict"
+        assert len(bench_info["presets"]) > 0, f"{bench_name} has no presets"
 
-        for case_id, case_info in problem_info["cases"].items():
-            assert "values" in case_info, f"{problem_name}/{case_id} missing 'values'"
-            assert isinstance(case_info["values"], dict), f"{problem_name}/{case_id} 'values' is not a dict"
-            assert "impls" in case_info, f"{problem_name}/{case_id} missing 'impls'"
-            assert isinstance(case_info["impls"], list), f"{problem_name}/{case_id} 'impls' is not a list"
-            assert len(case_info["impls"]) > 0, f"{problem_name}/{case_id} has no impls"
-
-            for impl in case_info["impls"]:
-                assert "task" in impl, f"{problem_name}/{case_id} impl missing 'task'"
-                assert "kernel" in impl, f"{problem_name}/{case_id} impl missing 'kernel'"
+        for preset_name, preset_dims in bench_info["presets"].items():
+            assert isinstance(preset_dims, dict), f"{bench_name}/{preset_name} dims is not a dict"
+            for param in bench_info["params"]:
+                assert param in preset_dims, f"{bench_name}/{preset_name} missing param '{param}'"

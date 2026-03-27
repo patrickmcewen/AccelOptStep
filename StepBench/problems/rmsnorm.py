@@ -1,3 +1,5 @@
+# Origin: /home/ubuntu/patrick/AbstractOpt/KernelBench/KernelBench/level1/36_RMSNorm_.py
+# Notes: Direct copy
 import torch
 import torch.nn as nn
 
@@ -33,14 +35,16 @@ class Model(nn.Module):
         # Normalize the input by dividing by the RMS
         return x / rms
 
-batch_size = 112
-features = 64
-dim1 = 512
-dim2 = 512
+SEED = 42
 
-def get_inputs():
-    x = torch.rand(batch_size, features, dim1, dim2)
-    return [x]
+def get_inputs(dims):
+    torch.manual_seed(SEED)
+    return [torch.randn(dims["batch_size"], dims["features"], dims["dim1"], dims["dim2"])]
 
-def get_init_inputs():
-    return [features]
+def get_init_inputs(dims):
+    return [dims["features"]]
+
+def compute_gold(dims):
+    model = Model(*get_init_inputs(dims))
+    inputs = get_inputs(dims)
+    return model(*inputs)

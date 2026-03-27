@@ -9,6 +9,9 @@
 # Inside the container, PYTHONPATH and working directory are set automatically.
 
 set -euo pipefail
+# Undo set -e before returning to interactive shell (sourced scripts
+# propagate shell options to the caller, which kills the session on any error).
+trap 'set +eu' RETURN 2>/dev/null || true
 
 DOCKER_IMAGE="step_artifact"
 HOST_DIR="/home/ubuntu/patrick/AbstractOpt/AccelOptStep"
