@@ -1,0 +1,18 @@
+You are given a problem and a baseline kernel written in a high-level language.
+Your task is to come up with 1 plan to convert the following problem to a STeP IR kernel, each plan should have 1 step.
+Please use your proficient knowledge of dataflow architectures, spatial computing, tiling strategies, memory hierarchy optimization, and any other relevant knowledge to come up with the conversion plan.
+
+# Problem
+```
+{problem_code}
+```
+
+# Baseline kernel
+```
+{kernel_code}
+```
+
+# Profile
+```
+{profile}
+```

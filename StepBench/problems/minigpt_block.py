@@ -94,6 +94,7 @@ def get_init_inputs(dims):
     return [dims["n_embd"], dims["n_head"], 0.0, 0.0, dims["max_seqlen"]]
 
 def compute_gold(dims):
+    torch.manual_seed(SEED)
     model = Model(*get_init_inputs(dims))
     inputs = get_inputs(dims)
     return model(*inputs)

@@ -11,6 +11,7 @@ defaults:
   project_name: pytorch-step
   org_name: pmcewen
   profile_mode: cycle_accurate
+  pipeline: pytorch-step        # valid values: pytorch-step, numpy-nki, pytorch-nki, numpy-step, pytorch-step-nki
   # step_artifact_src: /absolute/path/to/step_artifact/src
   # exp_date_base: auto-generated as YYYY-MM-DD-HHMMSS if omitted
   iters: 15            # optimization iterations after the first
@@ -69,3 +70,83 @@ smoke_test:
   breadth: 1
   num_samples: 1
   dry_run: true
+
+# NKI presets
+nki_full_run:
+  pipeline: numpy-nki
+  profile_mode: cycle_accurate
+  benchmarks: all
+  presets: all
+
+nki_test_small:
+  pipeline: numpy-nki
+  iters: 3
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+  benchmarks: [matmul, rmsnorm_matmul, silu]
+  presets: all
+
+nki_smoke_test:
+  pipeline: numpy-nki
+  benchmarks: all
+  presets: all
+  iters: 1
+  breadth: 1
+  num_samples: 1
+  dry_run: true
+
+# Cross-pipeline presets
+pytorch_nki_smoke_test:
+  pipeline: pytorch-nki
+  benchmarks: all
+  presets: [small]
+  iters: 1
+  breadth: 1
+  num_samples: 1
+  dry_run: true
+
+numpy_step_smoke_test:
+  pipeline: numpy-step
+  benchmarks: all
+  presets: all
+  iters: 1
+  breadth: 1
+  num_samples: 1
+  dry_run: true
+
+# Multi-stage pipeline presets
+pytorch_step_nki_smoke_test:
+  pipeline: pytorch-step-nki
+  benchmarks: all
+  presets: [small]
+  iters: 1
+  breadth: 1
+  num_samples: 1
+  dry_run: true
+
+
+pytorch_step_nki_small:
+  pipeline: pytorch-step-nki
+  benchmarks: [gemm, gemm_swish_scaling, sdpa]
+  presets: [small]
+  iters: 2
+  breadth: 2
+  num_samples: 2
+
+numpy_step_nki_small:
+  pipeline: numpy-step-nki
+  iters: 2
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+  benchmarks: [matmul, silu, rmsnorm_matmul]
+  presets: [default]

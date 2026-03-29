@@ -47,6 +47,17 @@ from rewrite.broadcast import infer_broadcast
 SEED = 42
 """
 
+# -------------------------- NKI Import Preamble --------------------------
+NKI_IMPORTS = """
+import numpy as np
+import neuronxcc.nki as nki
+import neuronxcc.nki.language as nl
+import neuronxcc.nki.typing as nt
+import neuronxcc.nki.isa as nisa
+from neuronxcc.nki import trace
+from neuronxcc.nki.language import par_dim
+"""
+
 # -------------------------- Config Models --------------------------
 class ExecutorPromptConfig(BaseModel):
     host_problem_path: str = ""
@@ -83,15 +94,21 @@ def construct_executor_prompt(config: ExecutorPromptConfig) -> str:
     )
     return user_prompt
 
-def _write_temp_kernel(code: str, baseline_code: str) -> str:
+def _write_temp_kernel(code: str, baseline_code: str, code_preamble: str = "step") -> str:
     fd, temp_path = tempfile.mkstemp(suffix=".py")
     with os.fdopen(fd, "w") as f:
-        f.write(STEP_IMPORTS)
-        f.write("\n")
-        f.write(baseline_code)
-        f.write("\n")
-        f.write(code)
-        f.write("\n")
+        if code_preamble == "nki":
+            f.write(NKI_IMPORTS)
+            f.write("\n")
+            f.write(code)
+            f.write("\n")
+        else:
+            f.write(STEP_IMPORTS)
+            f.write("\n")
+            f.write(baseline_code)
+            f.write("\n")
+            f.write(code)
+            f.write("\n")
     return temp_path
 
 # -------------------------- Parallel LLM --------------------------
@@ -168,6 +185,21 @@ def _profile_worker(program_path, problem_path, profile_mode, result_path, dims=
                 "metadata": {"compilation_error": traceback.format_exc()},
             }, f)
 
+def _nki_profile_worker(program_path, base_numpy_path, result_path, rel_tol):
+    """Profile an NKI kernel. Runs in a subprocess for isolation."""
+    import json, traceback
+    try:
+        from accelopt.nki_kernel_wrapper import NKIKernel
+        k = NKIKernel(program_path, base_numpy_path)
+        k.rel_tol = rel_tol
+        k.profile([])
+        out = {"compiled": k.res.compiled, "runnable": k.res.runnable, "correct": k.res.correct, "metadata": k.res.metadata or {}}
+    except Exception:
+        out = {"compiled": False, "runnable": False, "correct": False,
+               "metadata": {"compilation_error": traceback.format_exc()}}
+    with open(result_path, "w") as f:
+        json.dump(out, f)
+
 def profile_with_hard_timeout_sync(program_path: str, problem_path: str, profile_mode: str, timeout_sec: int, dims: dict | None = None,
                                    machine_config_path: str | None = None, machine_config_preset: str = "default") -> dict:
     fd, result_path = tempfile.mkstemp(prefix="step_profile_", suffix=".json"); os.close(fd)
@@ -190,6 +222,23 @@ def profile_with_hard_timeout_sync(program_path: str, problem_path: str, profile
     finally:
         with contextlib.suppress(Exception): os.remove(result_path)
 
+def nki_profile_with_hard_timeout_sync(program_path: str, base_numpy_path: str, rel_tol: float, timeout_sec: int) -> dict:
+    fd, result_path = tempfile.mkstemp(prefix="nki_profile_", suffix=".json"); os.close(fd)
+    p = mp.Process(target=_nki_profile_worker, args=(program_path, base_numpy_path, result_path, rel_tol), daemon=True)
+    p.start(); p.join(timeout_sec)
+    try:
+        if p.is_alive():
+            p.terminate(); p.join(5)
+            return {"compiled": False, "runnable": False, "correct": False,
+                    "metadata": {"compilation_error": f"Hard timeout after {timeout_sec}s"}}
+        if p.exitcode != 0:
+            return {"compiled": False, "runnable": False, "correct": False,
+                    "metadata": {"compilation_error": f"Worker process crashed with exit code {p.exitcode}"}}
+        with open(result_path) as f:
+            return json.load(f)
+    finally:
+        with contextlib.suppress(Exception): os.remove(result_path)
+
 # ---------- Stage 2: sequential profiling with result collection ----------
 def stage2_profile_and_collect(
     proposals: list[dict],
@@ -199,6 +248,10 @@ def stage2_profile_and_collect(
     per_profile_timeout: int = 900,
     machine_config_path: str | None = None,
     machine_config_preset: str = "default",
+    profiler: str = "step",
+    speedup_metric: str = "cycles",
+    code_preamble: str = "step",
+    rel_tol: float = 2e-5,
 ):
     results = []
     for prop in proposals:
@@ -219,17 +272,25 @@ def stage2_profile_and_collect(
         try:
             start = time.monotonic()
             print(f"[Stage2] START name={name} case={base_spec['case_name']} timeout={per_profile_timeout}s")
-            temp_path = _write_temp_kernel(code, base_spec["baseline_code"])
-            dims = json.loads(base_spec["values"]) if base_spec.get("values") else None
-            kp = profile_with_hard_timeout_sync(
-                program_path=temp_path,
-                problem_path=base_spec.get("problem_path", ""),
-                profile_mode=case_config.profile_mode,
-                timeout_sec=per_profile_timeout,
-                dims=dims,
-                machine_config_path=machine_config_path,
-                machine_config_preset=machine_config_preset,
-            )
+            temp_path = _write_temp_kernel(code, base_spec["baseline_code"], code_preamble=code_preamble)
+            if profiler == "nki":
+                kp = nki_profile_with_hard_timeout_sync(
+                    program_path=temp_path,
+                    base_numpy_path=base_spec.get("problem_path", ""),
+                    rel_tol=rel_tol,
+                    timeout_sec=per_profile_timeout,
+                )
+            else:
+                dims = json.loads(base_spec["values"]) if base_spec.get("values") else None
+                kp = profile_with_hard_timeout_sync(
+                    program_path=temp_path,
+                    problem_path=base_spec.get("problem_path", ""),
+                    profile_mode=case_config.profile_mode,
+                    timeout_sec=per_profile_timeout,
+                    dims=dims,
+                    machine_config_path=machine_config_path,
+                    machine_config_preset=machine_config_preset,
+                )
 
             record_result = {
                 "body": code,
@@ -250,20 +311,30 @@ def stage2_profile_and_collect(
                            "Unknown error")
                 record_result["error"] = error_msg
             else:
-                # Success case - add STeP metrics
                 metadata = kp.get("metadata", {})
-                record_result["off_chip_bytes"] = metadata.get("off_chip_bytes")
-                record_result["on_chip_bytes"] = metadata.get("on_chip_bytes")
-                record_result["cycles"] = metadata.get("cycles")
-                record_result["off_chip_expr"] = metadata.get("off_chip_expr")
-                record_result["on_chip_expr"] = metadata.get("on_chip_expr")
-                # Compute speedup (baseline_cycles / candidate_cycles)
-                baseline_cycles = (baseline_props.metadata or {}).get("cycles")
-                candidate_cycles = metadata.get("cycles")
-                if baseline_cycles and candidate_cycles:
-                    record_result["speedup"] = baseline_cycles / candidate_cycles
+                if speedup_metric == "latency":
+                    # Success case - add NKI metrics
+                    record_result["latency"] = metadata.get("latency")
+                    bl = (baseline_props.metadata or {}).get("latency")
+                    cl = metadata.get("latency")
+                    if bl and cl:
+                        record_result["speedup"] = bl / cl
+                    else:
+                        record_result["speedup"] = None
                 else:
-                    record_result["speedup"] = None
+                    # Success case - add STeP metrics
+                    record_result["off_chip_bytes"] = metadata.get("off_chip_bytes")
+                    record_result["on_chip_bytes"] = metadata.get("on_chip_bytes")
+                    record_result["cycles"] = metadata.get("cycles")
+                    record_result["off_chip_expr"] = metadata.get("off_chip_expr")
+                    record_result["on_chip_expr"] = metadata.get("on_chip_expr")
+                    # Compute speedup (baseline_cycles / candidate_cycles)
+                    baseline_cycles = (baseline_props.metadata or {}).get("cycles")
+                    candidate_cycles = metadata.get("cycles")
+                    if baseline_cycles and candidate_cycles:
+                        record_result["speedup"] = baseline_cycles / candidate_cycles
+                    else:
+                        record_result["speedup"] = None
 
             elapsed = time.monotonic() - start
             print(f"[Stage2] END name={name} case={base_spec['case_name']} elapsed={elapsed}s")
@@ -297,6 +368,10 @@ async def process_single_service_plan(
     base_spec: dict,
     machine_config_path: str | None = None,
     machine_config_preset: str = "default",
+    profiler: str = "step",
+    speedup_metric: str = "cycles",
+    code_preamble: str = "step",
+    rel_tol: float = 2e-5,
 ):
     pconfig = ExecutorPromptConfig(
         host_problem_path=case_config.task_path,
@@ -311,7 +386,9 @@ async def process_single_service_plan(
 
     # 2) Sequential profiling with result collection
     results = stage2_profile_and_collect(proposals, baseline_props, case_config, base_spec, per_profile_timeout=180,
-                                        machine_config_path=machine_config_path, machine_config_preset=machine_config_preset)
+                                        machine_config_path=machine_config_path, machine_config_preset=machine_config_preset,
+                                        profiler=profiler, speedup_metric=speedup_metric,
+                                        code_preamble=code_preamble, rel_tol=rel_tol)
 
     return results
 
@@ -322,8 +399,14 @@ async def main(args):
     start_time = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
 
     # load inputs and substitute machine config placeholders
-    from accelopt.step_kernel_wrapper import load_machine_config, apply_prompt_substitutions
-    mc = load_machine_config(path=args.machine_config_path, preset=args.machine_config_preset)
+    from pipeline_registry import resolve_pipeline
+    pipeline = resolve_pipeline(args.pipeline)
+
+    if pipeline["needs_machine_config"]:
+        from accelopt.step_kernel_wrapper import load_machine_config, apply_prompt_substitutions
+        mc = load_machine_config(path=args.machine_config_path, preset=args.machine_config_preset)
+    else:
+        mc = None
 
     with open(args.base_prompt_path, "r") as f:
         system_prompt = f.read()
@@ -332,7 +415,8 @@ async def main(args):
     if os.path.exists(operator_ref_path):
         with open(operator_ref_path, "r") as f:
             system_prompt += "\n\n" + f.read()
-    system_prompt = apply_prompt_substitutions(system_prompt, mc)
+    if mc is not None:
+        system_prompt = apply_prompt_substitutions(system_prompt, mc)
     with open(args.problems_path, "r") as f:
         problems = pd.read_csv(f)
     with open(args.extractor_output_path, "r") as f:
@@ -399,7 +483,11 @@ async def main(args):
             plan_results = await asyncio.wait_for(
                 process_single_service_plan(case_config, baseline_props, model, base_spec,
                                            machine_config_path=args.machine_config_path,
-                                           machine_config_preset=args.machine_config_preset),
+                                           machine_config_preset=args.machine_config_preset,
+                                           profiler=pipeline["profiler"],
+                                           speedup_metric=pipeline["speedup_metric"],
+                                           code_preamble=pipeline["code_preamble"],
+                                           rel_tol=args.rel_tol),
                 timeout=7200
             )
 
@@ -475,6 +563,8 @@ if __name__ == "__main__":
     parser.add_argument("--read_token", type=str, default="unused")  # For compatibility
     parser.add_argument("--machine_config_path", type=str, default=None, help="Path to machine_config.yaml")
     parser.add_argument("--machine_config_preset", type=str, default="default", help="Preset name in machine_config.yaml")
+    parser.add_argument("--pipeline", type=str, default="pytorch-step")
+    parser.add_argument("--rel_tol", type=float, default=2e-5, help="Relative tolerance for NKI correctness checks")
     parser.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
     args = parser.parse_args()
 

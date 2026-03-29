@@ -27,8 +27,12 @@ def run(
     log_file: Path = None,
     machine_config_path: str | None = None,
     machine_config_preset: str = "default",
+    pipeline: str = "pytorch-step",
 ) -> None:
+    from pipeline_registry import resolve_pipeline
+    pipeline_cfg = resolve_pipeline(pipeline)
     base_dir = Path(os.environ["ACCELOPT_BASE_DIR"])
+    prompts_base = base_dir / "prompts" / pipeline_cfg["prompts_subdir"]
     exp_dir = exp_base_dir / exp_date
 
     assert exp_dir.exists(), f"Experiment directory does not exist: {exp_dir}"
@@ -51,8 +55,8 @@ def run(
     (exp_dir / "rewrites").mkdir(parents=True, exist_ok=True)
     rewrites_selection_exec = base_dir / "scripts" / "rewrites_selection.py"
     executor_results_path = exp_dir / "candidates" / "last_iteration_executor_results.json"
-    base_prompt_path = base_dir / "prompts" / "summarizer_prompts" / "base_prompt.txt"
-    user_template_path = base_dir / "prompts" / "summarizer_prompts" / "user_prompt_template.txt"
+    base_prompt_path = prompts_base / "summarizer_prompts" / "base_prompt.txt"
+    user_template_path = prompts_base / "summarizer_prompts" / "user_prompt_template.txt"
     output_list_path = exp_dir / "rewrites" / "rewrites_selection_output_list.json"
     output_speedups_path = exp_dir / "rewrites" / "rewrites_selection_output_speedups.json"
     output_plan_ids_path = exp_dir / "rewrites" / "rewrites_selection_output_plan_ids.json"
@@ -92,6 +96,7 @@ def run(
             "--output_base_path", str(output_base_path),
             "--topk", str(topk_candidates),
             "--log_file", str(log_file),
+            "--pipeline", pipeline,
         ],
         cwd=str(exp_dir),
         check=True,

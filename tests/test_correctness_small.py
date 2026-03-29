@@ -45,6 +45,8 @@ def verify_baseline(bench_name, preset="small"):
 
     gold = problem.compute_gold(dims)
     graph, output_op = baseline.build_graph(dims)
+    # Some baselines permute dimensions for efficient tiling; read the inverse permute info
+    output_permute = getattr(baseline, "OUTPUT_PERMUTE", None)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         pb_path = os.path.join(tmpdir, "graph.pb")
@@ -65,6 +67,20 @@ def verify_baseline(bench_name, preset="small"):
         sim_tensor = torch.from_numpy(sim_output).float()
 
         os.chdir(orig_dir)
+
+    # Sim output is often flat 2D; reshape to match gold if element counts agree.
+    # If the baseline specifies OUTPUT_PERMUTE, reshape to intermediate shape first,
+    # then permute to match gold layout.
+    if sim_tensor.shape != gold.shape and sim_tensor.numel() == gold.numel():
+        if output_permute is not None:
+            # Compute inverse permute to get intermediate shape
+            inv_perm = [0] * len(output_permute)
+            for i, p in enumerate(output_permute):
+                inv_perm[p] = i
+            intermediate_shape = tuple(gold.shape[inv_perm[i]] for i in range(len(gold.shape)))
+            sim_tensor = sim_tensor.reshape(intermediate_shape).permute(output_permute)
+        else:
+            sim_tensor = sim_tensor.reshape(gold.shape)
 
     max_diff = (sim_tensor.float() - gold.float()).abs().max().item()
     passed = sim_tensor.shape == gold.shape and torch.allclose(
@@ -104,3 +120,31 @@ def test_gemm_swish_scaling():
 
 def test_sdpa():
     _run_and_assert("sdpa", "small")
+
+
+def test_gemm_batched():
+    _run_and_assert("gemm_batched", "small")
+
+
+def test_gemm_3d():
+    _run_and_assert("gemm_3d", "small")
+
+
+def test_activation_swish():
+    _run_and_assert("activation", "swish_small")
+
+
+def test_activation_softmax():
+    _run_and_assert("activation", "softmax_small")
+
+
+def test_gemm_scale_residual():
+    _run_and_assert("gemm_scale_residual", "small")
+
+
+def test_rmsnorm():
+    _run_and_assert("rmsnorm", "small")
+
+
+def test_layernorm():
+    _run_and_assert("layernorm", "small")

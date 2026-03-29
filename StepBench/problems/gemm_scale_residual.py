@@ -43,6 +43,7 @@ def get_init_inputs(dims):
     return [dims["in_features"], dims["out_features"], dims["scaling_factor"]]
 
 def compute_gold(dims):
+    torch.manual_seed(SEED)
     model = Model(*get_init_inputs(dims))
     inputs = get_inputs(dims)
     return model(*inputs)

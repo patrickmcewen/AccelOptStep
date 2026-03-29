@@ -21,8 +21,12 @@ def run(
     log_file: Path = None,
     machine_config_path: str | None = None,
     machine_config_preset: str = "default",
+    pipeline: str = "pytorch-step",
 ) -> None:
+    from pipeline_registry import resolve_pipeline
+    pipeline_cfg = resolve_pipeline(pipeline)
     base_dir = Path(os.environ["ACCELOPT_BASE_DIR"])
+    prompts_base = base_dir / "prompts" / pipeline_cfg["prompts_subdir"]
     exp_dir = exp_base_dir / exp_date
 
     assert exp_dir.exists(), f"Experiment directory does not exist: {exp_dir}"
@@ -58,8 +62,8 @@ def run(
 
     # Construct planner base prompt
     (exp_dir / "planner_prompts").mkdir(parents=True, exist_ok=True)
-    planner_prompt_constructor_exec = base_dir / "prompts" / "planner_prompts" / "construct_base_prompt.py"
-    original_base_prompt_path = base_dir / "prompts" / "planner_prompts" / "base_prompt.txt"
+    planner_prompt_constructor_exec = prompts_base / "planner_prompts" / "construct_base_prompt.py"
+    original_base_prompt_path = prompts_base / "planner_prompts" / "base_prompt.txt"
     new_base_prompt_path = exp_dir / "planner_prompts" / "base_prompt.txt"
     construct_prompt_cmd = [
         sys.executable, str(planner_prompt_constructor_exec),
@@ -76,10 +80,10 @@ def run(
     # Planner
     planner_exec = base_dir / "scripts" / "planner.py"
     planner_output_path = exp_dir / "planner_results.json"
-    planner_user_template_path = base_dir / "prompts" / "planner_prompts" / "planner_prompt_template.txt"
+    planner_user_template_path = prompts_base / "planner_prompts" / "planner_prompt_template.txt"
     planner_profile_result_path = exp_dir / "candidates" / "profile_results.csv"
     planner_model_config_path = exp_base_dir / "configs" / "planner_config.json"
-    planner_displayed_profiles_path = base_dir / "prompts" / "planner_prompts" / "displayed_profiles.json"
+    planner_displayed_profiles_path = prompts_base / "planner_prompts" / "displayed_profiles.json"
     planner_cmd = [
         sys.executable, str(planner_exec),
         "--output_path", str(planner_output_path),
@@ -92,6 +96,7 @@ def run(
         "--displayed_profiles_path", str(planner_displayed_profiles_path),
         "--log_file", str(log_file),
         "--machine_config_preset", machine_config_preset,
+        "--pipeline", pipeline,
     ]
     if machine_config_path:
         planner_cmd += ["--machine_config_path", machine_config_path]
@@ -99,8 +104,8 @@ def run(
 
     # Executor
     executor_exec = base_dir / "scripts" / "executor.py"
-    executor_base_prompt_path = base_dir / "prompts" / "executor_prompts" / "base_prompt.txt"
-    executor_user_template_path = base_dir / "prompts" / "executor_prompts" / "user_prompt_template.txt"
+    executor_base_prompt_path = prompts_base / "executor_prompts" / "base_prompt.txt"
+    executor_user_template_path = prompts_base / "executor_prompts" / "user_prompt_template.txt"
     executor_model_config_path = exp_base_dir / "configs" / "executor_config.json"
     executor_log_output_path = exp_dir / "executor_results.json"
     executor_cmd = [
@@ -117,6 +122,7 @@ def run(
         "--exp_date", exp_date,
         "--log_file", str(log_file),
         "--machine_config_preset", machine_config_preset,
+        "--pipeline", pipeline,
     ]
     if machine_config_path:
         executor_cmd += ["--machine_config_path", machine_config_path]

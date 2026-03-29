@@ -42,6 +42,7 @@ def get_init_inputs(dims):
     return [dims["input_size"], dims["hidden_layer_sizes"], dims["output_size"]]
 
 def compute_gold(dims):
+    torch.manual_seed(SEED)
     model = Model(*get_init_inputs(dims))
     inputs = get_inputs(dims)
     return model(*inputs)

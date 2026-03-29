@@ -38,6 +38,7 @@ if __name__ == "__main__":
     parser.add_argument("--executor_results_path", type=str, required=True)
     parser.add_argument("--output_base_path", type=str, required=True)
     parser.add_argument("--topk", type=int, default=1)
+    parser.add_argument("--pipeline", type=str, default="pytorch-step")
     parser.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
     args = parser.parse_args()
 
@@ -54,22 +55,27 @@ if __name__ == "__main__":
         _root.addHandler(_handler)
         _root.setLevel(logging.INFO)
 
+    from pipeline_registry import resolve_pipeline
+    pipeline = resolve_pipeline(args.pipeline)
+
     with open(args.executor_results_path, "r") as f:
         executor_results = json.load(f)
+
+    metric_key = pipeline["speedup_metric"]
 
     candidates = {}
     for record in executor_results["executor_results"]:
         service_name = record["service_name"]
         case_name = record["case_name"]
         for k, v in record.items():
-            if k in ["service_name", "case_name"]: 
+            if k in ["service_name", "case_name"]:
                 continue
             if not "baseline" in v.keys(): # "error": "No plan found"
                 continue
             branch_id = get_branch_id(k)
             if not "speedup" in v.keys() or v["speedup"] is None:
                 baseline_meta = json.loads(v.get("baseline_metadata", "{}"))
-                baseline_latency = baseline_meta.get("cycles", float("inf"))
+                baseline_latency = baseline_meta.get(metric_key, float("inf"))
                 candidates.setdefault(case_name, {}).setdefault((service_name, branch_id), []).append({
                     "body": v["baseline"],
                     "spec_code": v["spec_code"],
@@ -82,17 +88,18 @@ if __name__ == "__main__":
                     "priority": float("inf"),
                 })
             else:
-                cycles = v["cycles"]
+                assert metric_key in v, f"Expected '{metric_key}' in executor result for {k}, got keys: {list(v.keys())}"
+                metric_val = v[metric_key]
                 candidates.setdefault(case_name, {}).setdefault((service_name, branch_id), []).append({
                     "body": v["body"],
                     "spec_code": v["spec_code"],
-                    "latency": cycles,
+                    "latency": metric_val,
                     "profile": v.get("kernel_metadata", "{}"),
                     "problem": v["problem"],
                     "values": v["values"],
                     "old_service_name": service_name,
                     "plan_id": k,
-                    "priority": cycles,
+                    "priority": metric_val,
                 })
             
     # First select the best representative for each (service_name, branch_id)
@@ -117,7 +124,7 @@ if __name__ == "__main__":
             numpy_path = f"{output_base_path}/{new_service_name}_{item['old_service_name']}_{item['plan_id']}_problem.py"
             with open(body_path, "w") as f:
                 body_code = item["body"]
-                if body_code.lstrip().startswith("def "):
+                if pipeline["code_preamble"] == "step" and body_code.lstrip().startswith("def "):
                     body_code = STEP_PREAMBLE + "\n" + body_code
                 f.write(body_code)
             with open(numpy_path, "w") as f:

@@ -38,9 +38,13 @@ def run(
     log_file: Path,
     machine_config_path: str | None = None,
     machine_config_preset: str = "default",
+    pipeline: str = "pytorch-step",
 ) -> None:
     setup_problem_logger(log_file)
+    from pipeline_registry import resolve_pipeline
+    pipeline_cfg = resolve_pipeline(pipeline)
     base_dir = Path(os.environ["ACCELOPT_BASE_DIR"])
+    prompts_base = base_dir / "prompts" / pipeline_cfg["prompts_subdir"]
     experience_list_path = base_dir / "prompts" / "empty_rewrites.json"
 
     # First iteration
@@ -63,6 +67,7 @@ def run(
         log_file=log_file,
         machine_config_path=machine_config_path,
         machine_config_preset=machine_config_preset,
+        pipeline=pipeline,
     )
 
     # Subsequent iterations
@@ -101,6 +106,7 @@ def run(
             log_file=log_file,
             machine_config_path=machine_config_path,
             machine_config_preset=machine_config_preset,
+            pipeline=pipeline,
         )
 
         run_body.run(
@@ -117,6 +123,7 @@ def run(
             log_file=log_file,
             machine_config_path=machine_config_path,
             machine_config_preset=machine_config_preset,
+            pipeline=pipeline,
         )
 
         last_exp_date = current_exp_date
@@ -142,6 +149,7 @@ if __name__ == "__main__":
     parser.add_argument("--log_file", type=Path, required=True)
     parser.add_argument("--machine_config_path", type=str, default=None)
     parser.add_argument("--machine_config_preset", type=str, default="default")
+    parser.add_argument("--pipeline", type=str, default="pytorch-step")
     args = parser.parse_args()
 
     run(
@@ -163,4 +171,5 @@ if __name__ == "__main__":
         log_file=args.log_file,
         machine_config_path=args.machine_config_path,
         machine_config_preset=args.machine_config_preset,
+        pipeline=args.pipeline,
     )

@@ -14,7 +14,7 @@ gemm:
 
 gemm_batched:
   problem: problems/gemm_batched.py
-  baseline: null
+  baseline: baselines/gemm_batched.py
   params: [batch, M, K, N]
   presets:
     small:  {batch: 4,   M: 64,  K: 128,  N: 256}
@@ -22,7 +22,7 @@ gemm_batched:
 
 gemm_3d:
   problem: problems/gemm_3d.py
-  baseline: null
+  baseline: baselines/gemm_3d.py
   params: [N, M, K, L]
   presets:
     small:   {N: 2,  M: 64,   K: 128,  L: 64}
@@ -30,9 +30,11 @@ gemm_3d:
 
 activation:
   problem: problems/activation.py
-  baseline: null
+  baseline: baselines/activation.py
   params: [batch_size, dim, fn]
   presets:
+    swish_small:   {batch_size: 256,  dim: 4096,   fn: swish}
+    softmax_small: {batch_size: 128,  dim: 256,    fn: softmax}
     relu_small:    {batch_size: 256,  dim: 4096,   fn: relu}
     relu_large:    {batch_size: 4096, dim: 393216,  fn: relu}
     gelu_large:    {batch_size: 4096, dim: 393216,  fn: gelu}
@@ -42,7 +44,7 @@ activation:
 
 layernorm:
   problem: problems/layernorm.py
-  baseline: null
+  baseline: baselines/layernorm.py
   params: [batch_size, features, dim1, dim2]
   presets:
     small:   {batch_size: 2,  features: 8,  dim1: 32,  dim2: 32}
@@ -50,7 +52,7 @@ layernorm:
 
 rmsnorm:
   problem: problems/rmsnorm.py
-  baseline: null
+  baseline: baselines/rmsnorm.py
   params: [batch_size, features, dim1, dim2]
   presets:
     small:   {batch_size: 2,   features: 8,  dim1: 32,  dim2: 32}
@@ -74,7 +76,7 @@ gemm_scale_batchnorm:
 
 gemm_scale_residual:
   problem: problems/gemm_scale_residual.py
-  baseline: null
+  baseline: baselines/gemm_scale_residual.py
   params: [batch_size, in_features, out_features, scaling_factor]
   presets:
     small:   {batch_size: 64,    in_features: 512,  out_features: 512,  scaling_factor: 0.5}

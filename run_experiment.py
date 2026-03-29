@@ -63,7 +63,8 @@ def setup_environment(script_dir: Path, cfg: dict):
 
 
 def generate_profile_csv(script_dir: Path, experiments_dir: Path, profile_csv: Path, profile_mode: str, cfg: dict,
-                         machine_config_path: str | None = None, machine_config_preset: str = "default"):
+                         machine_config_path: str | None = None, machine_config_preset: str = "default",
+                         pipeline: str = "pytorch-step"):
     """Step 1: Generate profile_results.csv if it's empty (header-only)."""
 
     print(f">>> Generating profile_results.csv (profiling baselines with mode={profile_mode})...")
@@ -78,6 +79,7 @@ def generate_profile_csv(script_dir: Path, experiments_dir: Path, profile_csv: P
     if machine_config_path:
         cmd += ["--machine_config_path", machine_config_path]
     cmd += ["--machine_config_preset", machine_config_preset]
+    cmd += ["--pipeline", pipeline]
     benchmarks = cfg.get("benchmarks", "all")
     presets = cfg.get("presets", "all")
     if isinstance(benchmarks, list):
@@ -94,7 +96,8 @@ def generate_profile_csv(script_dir: Path, experiments_dir: Path, profile_csv: P
 
 
 def scaffold_experiments(script_dir: Path, experiments_dir: Path, cfg: dict, exp_date_base: str,
-                         machine_config_path: str | None = None, machine_config_preset: str = "default"):
+                         machine_config_path: str | None = None, machine_config_preset: str = "default",
+                         pipeline: str = "pytorch-step", prompts_dir: str | None = None):
     """Step 2: Scaffold experiment directories."""
     iters = cfg["iters"]
     breadth = cfg["breadth"]
@@ -166,6 +169,8 @@ def scaffold_experiments(script_dir: Path, experiments_dir: Path, cfg: dict, exp
             log_file=debug_log_path,
             machine_config_path=machine_config_path,
             machine_config_preset=machine_config_preset,
+            pipeline=pipeline,
+            prompts_dir=prompts_dir,
         )
         problem_configs.append((service_name, loop_kwargs))
 
@@ -200,6 +205,10 @@ def _tee_to_log(log_path: Path, fn, *args, **kwargs):
     """Run fn() while teeing all stdout/stderr (including subprocess output) to log_path."""
     log_f = open(log_path, "w")
     read_fd, write_fd = os.pipe()
+    # Increase pipe buffer to avoid BrokenPipeError from high-volume subprocess output (e.g. NKI)
+    import fcntl
+    F_SETPIPE_SZ = 1031
+    fcntl.fcntl(write_fd, F_SETPIPE_SZ, 1048576)  # 1MB
 
     # Save original fds and Python streams
     saved_stdout_fd = os.dup(1)
@@ -294,9 +303,19 @@ def main():
     # Resolve exp_date_base (auto-generate if not in config)
     exp_date_base = cfg.get("exp_date_base") or datetime.now().strftime("%Y-%m-%d-%H%M%S")
 
-    # Resolve machine config
-    machine_config_preset = cfg.get("machine_config", "default")
-    machine_config_path = str(script_dir / "StepBench" / "machine_config.yaml")
+    from pipeline_registry import resolve_pipeline
+
+    # Support both new 'pipeline' key and legacy 'benchmark_type' for backward compat
+    pipeline_str = cfg.get("pipeline") or cfg.get("benchmark_type", "pytorch-step")
+    pipeline = resolve_pipeline(pipeline_str)
+
+    prompts_dir = str(script_dir / "prompts" / pipeline["prompts_subdir"])
+    if pipeline["needs_machine_config"]:
+        machine_config_preset = cfg.get("machine_config", "default")
+        machine_config_path = str(script_dir / pipeline["bench_dir"] / "machine_config.yaml")
+    else:
+        machine_config_path = None
+        machine_config_preset = "default"
 
     setup_environment(script_dir, cfg)
 
@@ -304,10 +323,13 @@ def main():
     profile_csv = experiments_dir / "profile_results.csv"
 
     generate_profile_csv(script_dir, experiments_dir, profile_csv, cfg["profile_mode"], cfg,
-                         machine_config_path=machine_config_path, machine_config_preset=machine_config_preset)
+                         machine_config_path=machine_config_path, machine_config_preset=machine_config_preset,
+                         pipeline=pipeline_str)
     checkpoint_dir, problem_configs = scaffold_experiments(script_dir, experiments_dir, cfg, exp_date_base,
                                                           machine_config_path=machine_config_path,
-                                                          machine_config_preset=machine_config_preset)
+                                                          machine_config_preset=machine_config_preset,
+                                                          pipeline=pipeline_str,
+                                                          prompts_dir=prompts_dir)
     launch_loops(checkpoint_dir, problem_configs, cfg.get("dry_run", False))
 
 

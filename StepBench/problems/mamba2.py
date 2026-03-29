@@ -99,6 +99,7 @@ def get_init_inputs(dims):
     return [dims["batch_size"], dims["seq_length"], dims["n_heads"], dims["d_head"], dims["d_state"], dims["block_len"]]
 
 def compute_gold(dims):
+    torch.manual_seed(SEED)
     model = Model(*get_init_inputs(dims))
     inputs = get_inputs(dims)
     return model(*inputs)

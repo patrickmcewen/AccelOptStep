@@ -117,6 +117,7 @@ if __name__ == "__main__":
     parser.add_argument("--machine_config_path", type=str, default=None, help="Path to machine_config.yaml")
     parser.add_argument("--machine_config_preset", type=str, default="default", help="Preset name in machine_config.yaml")
     parser.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
+    parser.add_argument("--pipeline", type=str, default="pytorch-step")
     args = parser.parse_args()
 
     if args.log_file:
@@ -145,8 +146,14 @@ if __name__ == "__main__":
     with open(time_record_path, "w") as f:
         f.write(f"{current_time},")
 
-    from accelopt.step_kernel_wrapper import load_machine_config
-    mc = load_machine_config(path=args.machine_config_path, preset=args.machine_config_preset)
+    from pipeline_registry import resolve_pipeline
+    pipeline = resolve_pipeline(args.pipeline)
+
+    if pipeline["needs_machine_config"]:
+        from accelopt.step_kernel_wrapper import load_machine_config
+        mc = load_machine_config(path=args.machine_config_path, preset=args.machine_config_preset)
+    else:
+        mc = None
 
     df = pd.read_csv(profile_result_path)
     row_data_list = df.to_dict(orient="records")
