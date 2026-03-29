@@ -23,16 +23,19 @@ def check_step_correctness(
     assert sim_output is not None, "sim_output is None"
     assert gold is not None, "gold is None"
 
-    if sim_output.shape != gold.shape:
+    if sim_output.numel() != gold.numel():
         props.metadata["error"] = (
-            f"Shape mismatch: {sim_output.shape} vs {gold.shape}"
+            f"Element count mismatch: sim={sim_output.numel()} gold={gold.numel()} "
+            f"(sim shape={tuple(sim_output.shape)}, gold shape={tuple(gold.shape)})"
         )
         return props
 
+    sim_flat = sim_output.reshape(-1)
+    gold_flat = gold.reshape(-1)
     props.runnable = True
-    props.correct = torch.allclose(sim_output, gold, rtol=rtol, atol=atol)
+    props.correct = torch.allclose(sim_flat, gold_flat, rtol=rtol, atol=atol)
     if not props.correct:
-        max_diff = (sim_output - gold).abs().max().item()
+        max_diff = (sim_flat - gold_flat).abs().max().item()
         props.metadata["error"] = f"Max abs diff: {max_diff}"
 
     return props

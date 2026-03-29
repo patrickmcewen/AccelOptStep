@@ -26,13 +26,14 @@ defaults:
   presets: all            # 'all' or list of preset names, e.g. [small, square]
   dry_run: false
   logfire_enabled: true   # set to false to skip logfire setup (useful for local/test runs)
+  machine_config: default
 
 # --- Presets ---
 
 full_run: {}  # uses all defaults as-is
 
 test_small_scale_run:
-  iters: 2
+  iters: 3
   breadth: 2
   num_samples: 1
   topk_candidates: 2
@@ -41,6 +42,18 @@ test_small_scale_run:
   max_threshold: 1.01
   min_threshold: 1.01
   benchmarks: [gemm, gemm_swish_scaling, sdpa]
+  presets: [small]
+
+sdpa_only:
+  iters: 2
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+  benchmarks: [sdpa]
   presets: [small]
 
 # Example: run only GEMM square preset

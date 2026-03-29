@@ -19,6 +19,8 @@ def run(
     org_name: str,
     logfire_enabled: bool = True,
     log_file: Path = None,
+    machine_config_path: str | None = None,
+    machine_config_preset: str = "default",
 ) -> None:
     base_dir = Path(os.environ["ACCELOPT_BASE_DIR"])
     exp_dir = exp_base_dir / exp_date
@@ -27,11 +29,12 @@ def run(
 
     # Logfire setup (read existing env name from file)
     if logfire_enabled:
-        subprocess.run(
+        result = subprocess.run(
             ["logfire", "projects", "use", project_name, "--org", org_name],
             cwd=str(exp_dir),
-            check=True,
         )
+        if result.returncode != 0:
+            print(f"WARNING: logfire setup failed (exit {result.returncode}), continuing without telemetry")
     logfire_env_name = (exp_dir / "logfire_env_name.txt").read_text().strip()
     os.environ["LOGFIRE_ENVIRONMENT"] = logfire_env_name
     print(f"LOGFIRE_ENVIRONMENT: {logfire_env_name}")
@@ -58,17 +61,17 @@ def run(
     planner_prompt_constructor_exec = base_dir / "prompts" / "planner_prompts" / "construct_base_prompt.py"
     original_base_prompt_path = base_dir / "prompts" / "planner_prompts" / "base_prompt.txt"
     new_base_prompt_path = exp_dir / "planner_prompts" / "base_prompt.txt"
-    subprocess.run(
-        [
-            sys.executable, str(planner_prompt_constructor_exec),
-            "--original_base_prompt_path", str(original_base_prompt_path),
-            "--summarizer_output_list_path", str(construct_experience_output_path),
-            "--new_base_prompt_path", str(new_base_prompt_path),
-            "--log_file", str(log_file),
-        ],
-        cwd=str(exp_dir),
-        check=True,
-    )
+    construct_prompt_cmd = [
+        sys.executable, str(planner_prompt_constructor_exec),
+        "--original_base_prompt_path", str(original_base_prompt_path),
+        "--summarizer_output_list_path", str(construct_experience_output_path),
+        "--new_base_prompt_path", str(new_base_prompt_path),
+        "--log_file", str(log_file),
+        "--machine_config_preset", machine_config_preset,
+    ]
+    if machine_config_path:
+        construct_prompt_cmd += ["--machine_config_path", machine_config_path]
+    subprocess.run(construct_prompt_cmd, cwd=str(exp_dir), check=True)
 
     # Planner
     planner_exec = base_dir / "scripts" / "planner.py"
@@ -77,22 +80,22 @@ def run(
     planner_profile_result_path = exp_dir / "candidates" / "profile_results.csv"
     planner_model_config_path = exp_base_dir / "configs" / "planner_config.json"
     planner_displayed_profiles_path = base_dir / "prompts" / "planner_prompts" / "displayed_profiles.json"
-    subprocess.run(
-        [
-            sys.executable, str(planner_exec),
-            "--output_path", str(planner_output_path),
-            "--breadth", str(breadth),
-            "--exp_dir", str(exp_dir),
-            "--base_prompt_path", str(new_base_prompt_path),
-            "--user_template_path", str(planner_user_template_path),
-            "--profile_result_path", str(planner_profile_result_path),
-            "--model_config_path", str(planner_model_config_path),
-            "--displayed_profiles_path", str(planner_displayed_profiles_path),
-            "--log_file", str(log_file),
-        ],
-        cwd=str(exp_dir),
-        check=True,
-    )
+    planner_cmd = [
+        sys.executable, str(planner_exec),
+        "--output_path", str(planner_output_path),
+        "--breadth", str(breadth),
+        "--exp_dir", str(exp_dir),
+        "--base_prompt_path", str(new_base_prompt_path),
+        "--user_template_path", str(planner_user_template_path),
+        "--profile_result_path", str(planner_profile_result_path),
+        "--model_config_path", str(planner_model_config_path),
+        "--displayed_profiles_path", str(planner_displayed_profiles_path),
+        "--log_file", str(log_file),
+        "--machine_config_preset", machine_config_preset,
+    ]
+    if machine_config_path:
+        planner_cmd += ["--machine_config_path", machine_config_path]
+    subprocess.run(planner_cmd, cwd=str(exp_dir), check=True)
 
     # Executor
     executor_exec = base_dir / "scripts" / "executor.py"
@@ -100,21 +103,25 @@ def run(
     executor_user_template_path = base_dir / "prompts" / "executor_prompts" / "user_prompt_template.txt"
     executor_model_config_path = exp_base_dir / "configs" / "executor_config.json"
     executor_log_output_path = exp_dir / "executor_results.json"
+    executor_cmd = [
+        sys.executable, str(executor_exec),
+        "--num_samples", str(num_samples),
+        "--problems_path", str(planner_profile_result_path),
+        "--extractor_output_path", str(planner_output_path),
+        "--exp_dir", str(exp_dir),
+        "--base_prompt_path", str(executor_base_prompt_path),
+        "--user_template_path", str(executor_user_template_path),
+        "--model_config_path", str(executor_model_config_path),
+        "--profile_mode", profile_mode,
+        "--output_path", str(executor_log_output_path),
+        "--exp_date", exp_date,
+        "--log_file", str(log_file),
+        "--machine_config_preset", machine_config_preset,
+    ]
+    if machine_config_path:
+        executor_cmd += ["--machine_config_path", machine_config_path]
     subprocess.run(
-        [
-            sys.executable, str(executor_exec),
-            "--num_samples", str(num_samples),
-            "--problems_path", str(planner_profile_result_path),
-            "--extractor_output_path", str(planner_output_path),
-            "--exp_dir", str(exp_dir),
-            "--base_prompt_path", str(executor_base_prompt_path),
-            "--user_template_path", str(executor_user_template_path),
-            "--model_config_path", str(executor_model_config_path),
-            "--profile_mode", profile_mode,
-            "--output_path", str(executor_log_output_path),
-            "--exp_date", exp_date,
-            "--log_file", str(log_file),
-        ],
+        executor_cmd,
         cwd=str(exp_dir),
         check=True,
     )

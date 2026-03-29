@@ -34,7 +34,16 @@ def build_graph(dims):
     tile_seq = 64
     tile_dim = 128
     par_dispatch = 4
-    compute_bw = 4096
+    # Total compute bandwidth budget = 4096, distributed across 6 compute ops:
+    #   qkt matmul = 1024, exp = 256, mult_v matmul = 1024,
+    #   tile_wise_rowsum = 512, intra_tile_rowsum = 256, softmax_div = 1024
+    # sum = 4096
+    qkt_bw = 1024
+    exp_bw = 256
+    mult_v_bw = 1024
+    rowsum_accum_bw = 512
+    rowsum_map_bw = 256
+    div_bw = 1024
 
     seq_tiles = seq // tile_seq
     dim_tiles = dim // tile_dim
@@ -82,7 +91,7 @@ def build_graph(dims):
         init_fn=init_fn.Zero(shape=(tile_seq, tile_seq), dtype=Float32()),
         rank=1,
         write_back_mu=False,
-        compute_bw=compute_bw,
+        compute_bw=qkt_bw,
     )
     # stream: (outer, seq_q_tiles, seq_k_tiles), tile (tile_seq, tile_seq)
 
@@ -92,7 +101,7 @@ def build_graph(dims):
         input=qkt,
         fn=map_fn.Exp(),
         write_back_mu=False,
-        compute_bw=compute_bw,
+        compute_bw=exp_bw,
     )
 
     # Broadcast to 2 consumers: Exp@V and row sums
@@ -122,7 +131,7 @@ def build_graph(dims):
         init_fn=init_fn.Zero(shape=(tile_seq, dim), dtype=Float32()),
         rank=1,
         write_back_mu=False,
-        compute_bw=compute_bw,
+        compute_bw=mult_v_bw,
     )
     # stream: (outer, seq_q_tiles), tile (tile_seq, dim)
 
@@ -136,7 +145,7 @@ def build_graph(dims):
         init_fn=init_fn.Zero(shape=(tile_seq, tile_seq), dtype=Float32()),
         accum_rank=1,
         write_back_mu=False,
-        compute_bw=compute_bw,
+        compute_bw=rowsum_accum_bw,
     )
     # stream: (outer, seq_q_tiles), tile (tile_seq, tile_seq)
 
@@ -146,7 +155,7 @@ def build_graph(dims):
         input=tile_wise_rowsum,
         fn=map_fn.RowWiseSum(),
         write_back_mu=False,
-        compute_bw=compute_bw,
+        compute_bw=rowsum_map_bw,
     )
     # stream: (outer, seq_q_tiles), tile (tile_seq, 1)
 
@@ -158,7 +167,7 @@ def build_graph(dims):
         in2=intra_tile_rowsum,
         fn=map_fn.Div(),
         write_back_mu=True,
-        compute_bw=compute_bw,
+        compute_bw=div_bw,
     )
 
     # ===== Step 6: Store output =====

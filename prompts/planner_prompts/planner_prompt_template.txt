@@ -6,7 +6,7 @@ You should follow the optimization plan guidance to come up with the optimizatio
 # Optimization plan guidance
 1. Start from analyzing the profiles and find possible inefficiencies (high off-chip traffic, excessive on-chip buffering, low compute utilization)
 2. Combine the intuitions with the `build_graph` code to come up with optimization plans
-3. Think of: tile size changes, data reuse via Bufferize/Streamify, operator fusion, loop reordering, reducing intermediate stores (write_back_mu=False), par_dispatch tuning, compute_bw tuning
+3. Think of: tile size changes, data reuse via Bufferize/Streamify, operator fusion, loop reordering, reducing intermediate stores (write_back_mu=False), par_dispatch tuning, compute_bw redistribution (total budget is {total_compute_bw} shared across all compute operators)
 4. Just use existing STeP operators and functions. Do not invent new operators.
 5. Don't suggest using lower precision than the baseline kernel.
 

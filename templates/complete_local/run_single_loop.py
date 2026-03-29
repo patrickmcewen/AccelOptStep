@@ -36,6 +36,8 @@ def run(
     topk: int,
     exp_n: int,
     log_file: Path,
+    machine_config_path: str | None = None,
+    machine_config_preset: str = "default",
 ) -> None:
     setup_problem_logger(log_file)
     base_dir = Path(os.environ["ACCELOPT_BASE_DIR"])
@@ -59,6 +61,8 @@ def run(
         org_name=org_name,
         logfire_enabled=logfire_enabled,
         log_file=log_file,
+        machine_config_path=machine_config_path,
+        machine_config_preset=machine_config_preset,
     )
 
     # Subsequent iterations
@@ -95,6 +99,8 @@ def run(
             org_name=org_name,
             logfire_enabled=logfire_enabled,
             log_file=log_file,
+            machine_config_path=machine_config_path,
+            machine_config_preset=machine_config_preset,
         )
 
         run_body.run(
@@ -109,6 +115,8 @@ def run(
             org_name=org_name,
             logfire_enabled=logfire_enabled,
             log_file=log_file,
+            machine_config_path=machine_config_path,
+            machine_config_preset=machine_config_preset,
         )
 
         last_exp_date = current_exp_date
@@ -132,6 +140,8 @@ if __name__ == "__main__":
     parser.add_argument("--topk", type=int, required=True)
     parser.add_argument("--exp_n", type=int, required=True)
     parser.add_argument("--log_file", type=Path, required=True)
+    parser.add_argument("--machine_config_path", type=str, default=None)
+    parser.add_argument("--machine_config_preset", type=str, default="default")
     args = parser.parse_args()
 
     run(
@@ -151,4 +161,6 @@ if __name__ == "__main__":
         topk=args.topk,
         exp_n=args.exp_n,
         log_file=args.log_file,
+        machine_config_path=args.machine_config_path,
+        machine_config_preset=args.machine_config_preset,
     )

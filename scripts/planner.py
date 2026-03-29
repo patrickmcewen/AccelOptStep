@@ -13,12 +13,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 class UserPromptConfig(BaseModel):
+    model_config = {"arbitrary_types_allowed": True}
     problem_code: str = ""
     kernel_code: str = ""
     profile_str: str = ""
     prompt_template_path: str = ""
     displayed_profiles_path: str = ""
     breadth: int = 0
+    machine_config: dict | None = None
 
 class PlannerResponse(BaseModel):
     service_name: str
@@ -31,6 +33,9 @@ def construct_user_prompt(user_prompt_config: UserPromptConfig):
     user_prompt = prompt_template.replace("{problem_code}", user_prompt_config.problem_code)
     user_prompt = user_prompt.replace("{kernel_code}", user_prompt_config.kernel_code)
     user_prompt = user_prompt.replace("{profile}", user_prompt_config.profile_str)
+    if user_prompt_config.machine_config:
+        from accelopt.step_kernel_wrapper import apply_prompt_substitutions
+        user_prompt = apply_prompt_substitutions(user_prompt, user_prompt_config.machine_config)
     return user_prompt
 
 def seperate_reasoning(result: RunResult | None):
@@ -109,6 +114,8 @@ if __name__ == "__main__":
     parser.add_argument("--profile_result_path", type=str, required=True)
     parser.add_argument("--model_config_path", type=str, required=True)
     parser.add_argument("--displayed_profiles_path", type=str, required=True)
+    parser.add_argument("--machine_config_path", type=str, default=None, help="Path to machine_config.yaml")
+    parser.add_argument("--machine_config_preset", type=str, default="default", help="Preset name in machine_config.yaml")
     parser.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
     args = parser.parse_args()
 
@@ -138,9 +145,11 @@ if __name__ == "__main__":
     with open(time_record_path, "w") as f:
         f.write(f"{current_time},")
 
+    from accelopt.step_kernel_wrapper import load_machine_config
+    mc = load_machine_config(path=args.machine_config_path, preset=args.machine_config_preset)
+
     df = pd.read_csv(profile_result_path)
     row_data_list = df.to_dict(orient="records")
-    
 
     with open(args.model_config_path, "r") as f:
         model_config = json.load(f)
@@ -169,7 +178,8 @@ if __name__ == "__main__":
             "user_prompt_config": UserPromptConfig(
                 prompt_template_path=user_template_path,
                 breadth=breadth,
-                displayed_profiles_path=displayed_profiles_path
+                displayed_profiles_path=displayed_profiles_path,
+                machine_config=mc,
             ),
             "record_data": row_data
         }

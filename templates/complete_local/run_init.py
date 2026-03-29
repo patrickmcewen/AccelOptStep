@@ -33,11 +33,12 @@ def run(
 
     logfire_env_name = exp_date.replace("-", "")
     if logfire_enabled:
-        subprocess.run(
+        result = subprocess.run(
             ["logfire", "projects", "use", project_name, "--org", org_name],
             cwd=str(exp_dir),
-            check=True,
         )
+        if result.returncode != 0:
+            print(f"WARNING: logfire setup failed (exit {result.returncode}), continuing without telemetry")
     (exp_dir / "logfire_env_name.txt").write_text(logfire_env_name)
     os.environ["LOGFIRE_ENVIRONMENT"] = logfire_env_name
     print(f"LOGFIRE_ENVIRONMENT: {logfire_env_name}")

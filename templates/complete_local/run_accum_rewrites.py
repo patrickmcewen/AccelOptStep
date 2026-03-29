@@ -25,6 +25,8 @@ def run(
     org_name: str,
     logfire_enabled: bool = True,
     log_file: Path = None,
+    machine_config_path: str | None = None,
+    machine_config_preset: str = "default",
 ) -> None:
     base_dir = Path(os.environ["ACCELOPT_BASE_DIR"])
     exp_dir = exp_base_dir / exp_date
@@ -33,11 +35,12 @@ def run(
 
     # Logfire setup
     if logfire_enabled:
-        subprocess.run(
+        result = subprocess.run(
             ["logfire", "projects", "use", project_name, "--org", org_name],
             cwd=str(exp_dir),
-            check=True,
         )
+        if result.returncode != 0:
+            print(f"WARNING: logfire setup failed (exit {result.returncode}), continuing without telemetry")
     logfire_env_name = (exp_dir / "logfire_env_name.txt").read_text().strip()
     os.environ["LOGFIRE_ENVIRONMENT"] = logfire_env_name
     print(f"LOGFIRE_ENVIRONMENT: {logfire_env_name}")

@@ -23,13 +23,21 @@ def test_incorrect_output_fails():
     assert result.runnable is True
 
 
-def test_shape_mismatch_fails():
+def test_element_count_mismatch_fails():
     gold = torch.randn(32, 64)
     sim_output = torch.randn(32, 32)
     result = check_step_correctness(sim_output, gold, rtol=1e-4, atol=1e-6)
     assert result.correct is False
     assert result.runnable is False
-    assert "Shape mismatch" in result.metadata["error"]
+    assert "Element count mismatch" in result.metadata["error"]
+
+
+def test_shape_mismatch_same_elements_passes():
+    gold = torch.randn(1, 1, 64, 128)
+    sim_output = gold.reshape(64, 128)
+    result = check_step_correctness(sim_output, gold, rtol=1e-4, atol=1e-6)
+    assert result.correct is True
+    assert result.runnable is True
 
 
 def test_close_output_passes():

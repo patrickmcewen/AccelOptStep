@@ -1,0 +1,26 @@
+# Machine-specific hardware constraints for the STeP simulator.
+# Single source of truth for chip parameters.
+
+default:
+  # Total compute bandwidth shared across all compute operators.
+  # The sum of compute_bw values across all operators in a graph must not exceed this.
+  total_compute_bw: 4096
+
+  # On-chip scratchpad memory size in bytes.
+  # Peak on-chip buffer requirement (on_chip_bytes) must not exceed this.
+  on_chip_memory_bytes: 33554432  # 32 MB
+
+  # HBM (off-chip memory) configuration.
+  hbm:
+    addr_offset: 64
+    channel_num: 32
+    per_channel_latency: 2
+    per_channel_init_interval: 2
+    per_channel_outstanding: 1
+    per_channel_start_up_time: 14
+
+  # Simulator configuration.
+  sim:
+    channel_depth: 2
+    functional_sim: true
+    mock_bf16: false

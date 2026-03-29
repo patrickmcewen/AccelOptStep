@@ -4,6 +4,7 @@
 import os
 import json
 import tempfile
+from pathlib import Path
 import traceback
 import contextlib
 import logging
@@ -138,7 +139,8 @@ async def stage1_gather_proposals(service_name: str, pconfig: ExecutorPromptConf
     results = await asyncio.gather(*tasks, return_exceptions=True)
     return [r for r in results if isinstance(r, dict)]
 
-def _profile_worker(program_path, problem_path, profile_mode, result_path, dims=None):
+def _profile_worker(program_path, problem_path, profile_mode, result_path, dims=None,
+                    machine_config_path=None, machine_config_preset="default"):
     """Profile a STeP kernel. Runs in a subprocess for isolation."""
     import json, traceback
     try:
@@ -148,7 +150,8 @@ def _profile_worker(program_path, problem_path, profile_mode, result_path, dims=
             code = f.read()
 
         mode = ProfileMode.SYMBOLIC if profile_mode == "symbolic" else ProfileMode.CYCLE_ACCURATE
-        kernel = StepKernel(step_code=code, problem_path=problem_path, profile_mode=mode, dims=dims)
+        kernel = StepKernel(step_code=code, problem_path=problem_path, profile_mode=mode, dims=dims,
+                           machine_config_path=machine_config_path, machine_config_preset=machine_config_preset)
         result = kernel.profile()
 
         with open(result_path, "w") as f:
@@ -165,9 +168,11 @@ def _profile_worker(program_path, problem_path, profile_mode, result_path, dims=
                 "metadata": {"compilation_error": traceback.format_exc()},
             }, f)
 
-def profile_with_hard_timeout_sync(program_path: str, problem_path: str, profile_mode: str, timeout_sec: int, dims: dict | None = None) -> dict:
+def profile_with_hard_timeout_sync(program_path: str, problem_path: str, profile_mode: str, timeout_sec: int, dims: dict | None = None,
+                                   machine_config_path: str | None = None, machine_config_preset: str = "default") -> dict:
     fd, result_path = tempfile.mkstemp(prefix="step_profile_", suffix=".json"); os.close(fd)
-    p = mp.Process(target=_profile_worker, args=(program_path, problem_path, profile_mode, result_path, dims), daemon=True)
+    p = mp.Process(target=_profile_worker, args=(program_path, problem_path, profile_mode, result_path, dims,
+                                                  machine_config_path, machine_config_preset), daemon=True)
     p.start(); p.join(timeout_sec)
     try:
         if p.is_alive():
@@ -191,7 +196,9 @@ def stage2_profile_and_collect(
     baseline_props: StepKernelProperties,
     case_config: ExecutorConfig,
     base_spec: dict,
-    per_profile_timeout: int = 900
+    per_profile_timeout: int = 900,
+    machine_config_path: str | None = None,
+    machine_config_preset: str = "default",
 ):
     results = []
     for prop in proposals:
@@ -220,6 +227,8 @@ def stage2_profile_and_collect(
                 profile_mode=case_config.profile_mode,
                 timeout_sec=per_profile_timeout,
                 dims=dims,
+                machine_config_path=machine_config_path,
+                machine_config_preset=machine_config_preset,
             )
 
             record_result = {
@@ -285,7 +294,9 @@ async def process_single_service_plan(
     case_config: ExecutorConfig,
     baseline_props: StepKernelProperties,
     model: OpenAIChatCompletionsModel,
-    base_spec: dict
+    base_spec: dict,
+    machine_config_path: str | None = None,
+    machine_config_preset: str = "default",
 ):
     pconfig = ExecutorPromptConfig(
         host_problem_path=case_config.task_path,
@@ -299,7 +310,8 @@ async def process_single_service_plan(
     proposals = await stage1_gather_proposals(case_config.service_name, pconfig, agent, case_config.num_samples)
 
     # 2) Sequential profiling with result collection
-    results = stage2_profile_and_collect(proposals, baseline_props, case_config, base_spec, per_profile_timeout=180)
+    results = stage2_profile_and_collect(proposals, baseline_props, case_config, base_spec, per_profile_timeout=180,
+                                        machine_config_path=machine_config_path, machine_config_preset=machine_config_preset)
 
     return results
 
@@ -309,7 +321,10 @@ async def main(args):
     os.makedirs(args.exp_dir, exist_ok=True)
     start_time = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
 
-    # load inputs
+    # load inputs and substitute machine config placeholders
+    from accelopt.step_kernel_wrapper import load_machine_config, apply_prompt_substitutions
+    mc = load_machine_config(path=args.machine_config_path, preset=args.machine_config_preset)
+
     with open(args.base_prompt_path, "r") as f:
         system_prompt = f.read()
     # Append operator reference if it exists alongside the base prompt
@@ -317,6 +332,7 @@ async def main(args):
     if os.path.exists(operator_ref_path):
         with open(operator_ref_path, "r") as f:
             system_prompt += "\n\n" + f.read()
+    system_prompt = apply_prompt_substitutions(system_prompt, mc)
     with open(args.problems_path, "r") as f:
         problems = pd.read_csv(f)
     with open(args.extractor_output_path, "r") as f:
@@ -381,7 +397,9 @@ async def main(args):
             )
 
             plan_results = await asyncio.wait_for(
-                process_single_service_plan(case_config, baseline_props, model, base_spec),
+                process_single_service_plan(case_config, baseline_props, model, base_spec,
+                                           machine_config_path=args.machine_config_path,
+                                           machine_config_preset=args.machine_config_preset),
                 timeout=7200
             )
 
@@ -410,12 +428,35 @@ async def main(args):
     with open(args.output_path, "w") as f:
         json.dump(output_dict, f, indent=4)
 
+    # Materialize code fields as readable .py files
+    materialize_executor_results(output_dict, Path(args.exp_dir))
+
     # Save timing info
     time_record_path = f"{args.exp_dir}/executor_start_end_time.txt"
     with open(time_record_path, "w") as f:
         f.write(f"{start_time},{end_time}")
 
     logger.info(f"Results saved to {args.output_path}")
+
+CODE_FIELDS = ("body", "baseline", "spec_code")
+
+def materialize_executor_results(output_dict: dict, exp_dir: Path) -> None:
+    """Write code fields from executor results as standalone .py files for readability."""
+    results_dir = exp_dir / "executor_results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    for record in output_dict["executor_results"]:
+        service_name = record["service_name"]
+        for key, value in record.items():
+            if key in ("service_name", "case_name") or not isinstance(value, dict):
+                continue
+            plan_dir = results_dir / f"{service_name}_{key}"
+            plan_dir.mkdir(parents=True, exist_ok=True)
+            for field in CODE_FIELDS:
+                code = value.get(field)
+                if code:
+                    (plan_dir / f"{field}.py").write_text(code)
+
 
 if __name__ == "__main__":
     import argparse
@@ -432,6 +473,8 @@ if __name__ == "__main__":
     parser.add_argument("--output_path", type=str, required=True)
     parser.add_argument("--exp_date", type=str, required=True)
     parser.add_argument("--read_token", type=str, default="unused")  # For compatibility
+    parser.add_argument("--machine_config_path", type=str, default=None, help="Path to machine_config.yaml")
+    parser.add_argument("--machine_config_preset", type=str, default="default", help="Preset name in machine_config.yaml")
     parser.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
     args = parser.parse_args()
 

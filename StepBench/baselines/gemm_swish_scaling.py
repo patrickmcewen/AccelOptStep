@@ -24,7 +24,11 @@ def build_graph(dims):
 
     tile_m, tile_k, tile_n = 128, 128, 128
     par_dispatch = 4
-    compute_bw = 4096
+    # Total compute bandwidth budget = 4096, distributed across 3 compute ops:
+    #   matmul (critical path) = 2048, silu = 1024, scaling mul = 1024
+    matmul_bw = 2048
+    silu_bw = 1024
+    scale_bw = 1024
 
     graph = MultiDiGraph()
 
@@ -67,7 +71,7 @@ def build_graph(dims):
         init_fn=init_fn.Zero(shape=(tile_m, tile_n), dtype=Float32()),
         rank=1,
         write_back_mu=False,
-        compute_bw=compute_bw,
+        compute_bw=matmul_bw,
     )
 
     silu = UnaryMap(
@@ -75,7 +79,7 @@ def build_graph(dims):
         input=matmul,
         fn=map_fn.Silu(),
         write_back_mu=False,
-        compute_bw=compute_bw,
+        compute_bw=silu_bw,
     )
 
     scale_load = OffChipLoad(
@@ -93,7 +97,7 @@ def build_graph(dims):
         in2=scale_load,
         fn=map_fn.Mul(),
         write_back_mu=True,
-        compute_bw=compute_bw,
+        compute_bw=scale_bw,
     )
 
     output_op = OffChipStore(

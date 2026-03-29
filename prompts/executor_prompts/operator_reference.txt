@@ -18,7 +18,7 @@ OffChipLoad(
     out_shape_tiled=(d0, d1, ...), # Output stream shape (in tiles)
     tile_row=int,                  # Tile height
     tile_col=int,                  # Tile width
-    par_dispatch=int,              # Load parallelism (typically 4)
+    par_dispatch=int,              # Parallel tile transfers (tunable per-operator)
     mock_bf16=False,
 )
 ```
@@ -52,6 +52,8 @@ OffChipStore(
 ---
 
 ## Compute Operators
+
+**Compute bandwidth budget:** The chip has a total compute bandwidth of **{total_compute_bw}**. Each compute operator declares a `compute_bw` parameter that allocates a share of this total. The sum of all `compute_bw` values across all compute operators in the graph must not exceed {total_compute_bw}. Ideally the full budget is used (sum == {total_compute_bw}). Allocating more bandwidth to an operator increases its throughput; distribute the budget based on which operators are on the critical path.
 
 ### BinaryMap — Element-wise binary operation
 ```python
@@ -302,129 +304,4 @@ If `filter_mask=True`, last dim becomes DynDim.
 - `init_fn.Empty(shape=(rows, cols), dtype=Float32())` — uninitialized (use when first write overwrites entirely)
 
 ---
-
-## Composition Patterns (from verified baselines)
-
-### Pattern 1: Weight-Stationary GEMM — C = A @ B
-```python
-# A is (M, K), B is (K, N). Tiles: (tile_m, tile_k), (tile_k, tile_n).
-# Both loads have out_shape_tiled=(M//tm, N//tn, K//tk) — last dim is reduction.
-
-a_load = OffChipLoad(underlying=A,
-    stride=(K//tk, 0, 1),          # M advances, N broadcast, K advances
-    out_shape_tiled=(M//tm, N//tn, K//tk),
-    tile_row=tm, tile_col=tk, par_dispatch=4)
-# Shape: (1, M//tm, N//tn, K//tk), Tile(tm, tk)
-
-b_load = OffChipLoad(underlying=B,
-    stride=(0, 1, N//tn),          # M broadcast, N advances, K advances
-    out_shape_tiled=(M//tm, N//tn, K//tk),
-    tile_row=tk, tile_col=tn, par_dispatch=4)
-# Shape: (1, M//tm, N//tn, K//tk), Tile(tk, tn)
-
-# rank=1 reduces K//tk dimension
-matmul = BinaryMapAccum(graph, a_load, b_load,
-    fn=map_accum_fn.Matmul(),
-    init_fn=init_fn.Zero(shape=(tm, tn), dtype=Float32()),
-    rank=1, write_back_mu=True, compute_bw=4096)
-# Shape: (M//tm, N//tn), Tile(tm, tn)
-
-output = OffChipStore(graph, matmul, par_dispatch=4, store_file_name="output")
-```
-
-### Pattern 2: Fused GEMM + Activation — y = SiLU(x @ W)
-```python
-# Same loads as Pattern 1, but write_back_mu=False keeps GEMM output on-chip.
-
-matmul = BinaryMapAccum(graph, x_load, w_load,
-    fn=map_accum_fn.Matmul(),
-    init_fn=init_fn.Zero(shape=(tm, tn), dtype=Float32()),
-    rank=1, write_back_mu=False, compute_bw=4096)
-# Shape: (M//tm, N//tn), Tile(tm, tn) — stays on-chip
-
-silu = UnaryMap(graph, matmul, fn=map_fn.Silu(),
-    write_back_mu=True, compute_bw=4096)
-# Shape: (M//tm, N//tn), Tile(tm, tn) — written to HBM
-
-output = OffChipStore(graph, silu, par_dispatch=4, store_file_name="output")
-```
-
-### Pattern 3: Attention — softmax(Q @ K^T) @ V
-```python
-# Q: (outer, seq, dim), K: (outer, seq, dim), V: (outer*seq, dim)
-# tile_seq=64, tile_dim=128. outer=batch*heads.
-
-# Step 1: QK^T — accumulate over dim
-q_load = OffChipLoad(underlying=Q,
-    stride=(seq_tiles * dim_tiles, dim_tiles, 0, 1),
-    out_shape_tiled=(outer, seq_tiles, seq_tiles, dim_tiles),
-    tile_row=tile_seq, tile_col=tile_dim, par_dispatch=4)
-# Shape: (1, outer, sq, sk, dk), Tile(tsq, tdim)
-
-k_load = OffChipLoad(underlying=K,
-    stride=(seq_tiles * dim_tiles, 0, dim_tiles, 1),
-    out_shape_tiled=(outer, seq_tiles, seq_tiles, dim_tiles),
-    tile_row=tile_seq, tile_col=tile_dim, par_dispatch=4)
-# Shape: (1, outer, sq, sk, dk), Tile(tsq, tdim)
-
-qkt = BinaryMapAccum(graph, q_load, k_load,
-    fn=map_accum_fn.Matmul(weight_transposed=True),
-    init_fn=init_fn.Zero(shape=(tile_seq, tile_seq), dtype=Float32()),
-    rank=1, write_back_mu=False, compute_bw=4096)
-# Shape: (outer, sq, sk), Tile(tsq, tsq)
-
-# Step 2: Exp and broadcast to 2 consumers
-exp_qkt = UnaryMap(graph, qkt, fn=map_fn.Exp(),
-    write_back_mu=False, compute_bw=4096)
-exp_bc = Broadcast(graph, exp_qkt, num_consumers=2)
-# Each output: shape=(outer, sq, sk), Tile(tsq, tsq)
-
-# Step 3: Exp(QK^T) @ V — accumulate over seq_k
-v_load = OffChipLoad(underlying=V_2d,
-    stride=(seq_tiles, 0, 1),
-    out_shape_tiled=(outer, seq_tiles, seq_tiles),
-    tile_row=tile_seq, tile_col=dim, par_dispatch=4)
-# Shape: (1, outer, sq, sk), Tile(tsq, dim)
-
-mult_v = BinaryMapAccum(graph, (exp_bc, 0), v_load,
-    fn=map_accum_fn.Matmul(),
-    init_fn=init_fn.Zero(shape=(tile_seq, dim), dtype=Float32()),
-    rank=1, write_back_mu=False, compute_bw=4096)
-# Shape: (outer, sq), Tile(tsq, dim)
-
-# Step 4: Row sums for softmax denominator
-tile_sum = Accum(graph, (exp_bc, 1),
-    output_stream_dtype=Tile(tile_dtype=Float32(), shape=(tile_seq, tile_seq)),
-    fn=accum_fn.Add(),
-    init_fn=init_fn.Zero(shape=(tile_seq, tile_seq), dtype=Float32()),
-    accum_rank=1, write_back_mu=False, compute_bw=4096)
-# Shape: (outer, sq), Tile(tsq, tsq)
-
-row_sum = UnaryMap(graph, tile_sum, fn=map_fn.RowWiseSum(),
-    write_back_mu=False, compute_bw=4096)
-# Shape: (outer, sq), Tile(tsq, 1)
-
-# Step 5: Divide — normalize
-result = BinaryMap(graph, mult_v, row_sum,
-    fn=map_fn.Div(), write_back_mu=True, compute_bw=4096)
-# Shape: (outer, sq), Tile(tsq, dim)
-
-output = OffChipStore(graph, result, par_dispatch=4, store_file_name="output")
-```
-
-### Pattern 4: Data Reuse with Bufferize/Streamify
-```python
-# Goal: Load weight once, reuse for multiple input tiles.
-# w_load: shape=(1, M//tm, N//tn, K//tk), Tile(tk, tn)
-
-# Buffer the inner 2 dims (N and K tiling)
-w_buf = Bufferize(graph, w_load, rank=2, off_chip=False)
-# Shape: (1, M//tm), Buffer(Tile(tk,tn), shape=(N//tn, K//tk))
-
-# Replay with no extra dims — empty repeat_factor
-w_stream = Streamify(graph, w_buf, repeat_factor=[], rank=2, off_chip=False)
-# Shape: (1, M//tm) + () + (N//tn, K//tk) = (1, M//tm, N//tn, K//tk)
-# Dtype: Tile(tk, tn) — same as original, ready for BinaryMapAccum
-
-# Now pair with x_load that has the same shape
 ```

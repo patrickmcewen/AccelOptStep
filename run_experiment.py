@@ -62,7 +62,8 @@ def setup_environment(script_dir: Path, cfg: dict):
     os.environ["PYTHONPATH"] = ":".join(additions + ([existing] if existing else []))
 
 
-def generate_profile_csv(script_dir: Path, experiments_dir: Path, profile_csv: Path, profile_mode: str, cfg: dict):
+def generate_profile_csv(script_dir: Path, experiments_dir: Path, profile_csv: Path, profile_mode: str, cfg: dict,
+                         machine_config_path: str | None = None, machine_config_preset: str = "default"):
     """Step 1: Generate profile_results.csv if it's empty (header-only)."""
 
     print(f">>> Generating profile_results.csv (profiling baselines with mode={profile_mode})...")
@@ -74,6 +75,9 @@ def generate_profile_csv(script_dir: Path, experiments_dir: Path, profile_csv: P
         "--profile_mode", profile_mode,
         "--mode", "construct",
     ]
+    if machine_config_path:
+        cmd += ["--machine_config_path", machine_config_path]
+    cmd += ["--machine_config_preset", machine_config_preset]
     benchmarks = cfg.get("benchmarks", "all")
     presets = cfg.get("presets", "all")
     if isinstance(benchmarks, list):
@@ -89,7 +93,8 @@ def generate_profile_csv(script_dir: Path, experiments_dir: Path, profile_csv: P
     print(f">>> Done. {new_count} baselines profiled.")
 
 
-def scaffold_experiments(script_dir: Path, experiments_dir: Path, cfg: dict, exp_date_base: str):
+def scaffold_experiments(script_dir: Path, experiments_dir: Path, cfg: dict, exp_date_base: str,
+                         machine_config_path: str | None = None, machine_config_preset: str = "default"):
     """Step 2: Scaffold experiment directories."""
     iters = cfg["iters"]
     breadth = cfg["breadth"]
@@ -159,6 +164,8 @@ def scaffold_experiments(script_dir: Path, experiments_dir: Path, cfg: dict, exp
             topk=topk,
             exp_n=exp_n,
             log_file=debug_log_path,
+            machine_config_path=machine_config_path,
+            machine_config_preset=machine_config_preset,
         )
         problem_configs.append((service_name, loop_kwargs))
 
@@ -287,13 +294,20 @@ def main():
     # Resolve exp_date_base (auto-generate if not in config)
     exp_date_base = cfg.get("exp_date_base") or datetime.now().strftime("%Y-%m-%d-%H%M%S")
 
+    # Resolve machine config
+    machine_config_preset = cfg.get("machine_config", "default")
+    machine_config_path = str(script_dir / "StepBench" / "machine_config.yaml")
+
     setup_environment(script_dir, cfg)
 
     experiments_dir = script_dir / "experiments" / "full_complete_local"
     profile_csv = experiments_dir / "profile_results.csv"
 
-    generate_profile_csv(script_dir, experiments_dir, profile_csv, cfg["profile_mode"], cfg)
-    checkpoint_dir, problem_configs = scaffold_experiments(script_dir, experiments_dir, cfg, exp_date_base)
+    generate_profile_csv(script_dir, experiments_dir, profile_csv, cfg["profile_mode"], cfg,
+                         machine_config_path=machine_config_path, machine_config_preset=machine_config_preset)
+    checkpoint_dir, problem_configs = scaffold_experiments(script_dir, experiments_dir, cfg, exp_date_base,
+                                                          machine_config_path=machine_config_path,
+                                                          machine_config_preset=machine_config_preset)
     launch_loops(checkpoint_dir, problem_configs, cfg.get("dry_run", False))
 
 

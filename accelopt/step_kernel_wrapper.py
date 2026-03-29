@@ -6,11 +6,58 @@ import sys
 import tempfile
 from enum import Enum
 
+import yaml
 import torch
 import sympy
 from networkx import MultiDiGraph
 
 from accelopt.eval_step import StepKernelProperties
+
+# Default machine config path (relative to this file -> StepBench/machine_config.yaml)
+_DEFAULT_MACHINE_CONFIG = os.path.join(
+    os.path.dirname(__file__), "..", "StepBench", "machine_config.yaml"
+)
+
+
+def load_machine_config(path: str | None = None, preset: str = "default") -> dict:
+    """Load machine config from YAML, selecting a named preset.
+
+    Returns dict with keys: total_compute_bw, hbm, sim.
+    """
+    path = path or _DEFAULT_MACHINE_CONFIG
+    with open(path) as f:
+        raw = yaml.safe_load(f)
+    assert preset in raw, (
+        f"Machine config preset '{preset}' not found in {path}. "
+        f"Available: {list(raw.keys())}"
+    )
+    return raw[preset]
+
+
+def prompt_substitutions(mc: dict) -> dict[str, str]:
+    """Return a dict of {placeholder: value} for prompt template substitution."""
+    hbm = mc["hbm"]
+    on_chip_mb = mc["on_chip_memory_bytes"] / (1024 * 1024)
+    on_chip_human = f"{int(on_chip_mb)} MB" if on_chip_mb == int(on_chip_mb) else f"{on_chip_mb:.1f} MB"
+    return {
+        "{total_compute_bw}": str(mc["total_compute_bw"]),
+        "{on_chip_memory_bytes}": str(mc["on_chip_memory_bytes"]),
+        "{on_chip_memory_human}": on_chip_human,
+        "{hbm_channel_num}": str(hbm["channel_num"]),
+        "{hbm_per_channel_latency}": str(hbm["per_channel_latency"]),
+        "{hbm_per_channel_init_interval}": str(hbm["per_channel_init_interval"]),
+        "{hbm_per_channel_outstanding}": str(hbm["per_channel_outstanding"]),
+        "{hbm_per_channel_start_up_time}": str(hbm["per_channel_start_up_time"]),
+        "{hbm_addr_offset}": str(hbm["addr_offset"]),
+    }
+
+
+def apply_prompt_substitutions(text: str, mc: dict) -> str:
+    """Replace all machine config placeholders in a prompt string."""
+    for placeholder, value in prompt_substitutions(mc).items():
+        text = text.replace(placeholder, value)
+    return text
+
 
 # Ensure step_artifact is importable
 STEP_SRC = os.environ.get(
@@ -37,26 +84,19 @@ class StepKernel:
         problem_path: str,
         profile_mode: ProfileMode = ProfileMode.CYCLE_ACCURATE,
         dims: dict | None = None,
-        hbm_config: dict | None = None,
-        sim_config: dict | None = None,
+        machine_config_path: str | None = None,
+        machine_config_preset: str = "default",
     ):
         self.step_code = step_code
         self.problem_path = problem_path
         self.profile_mode = profile_mode
         self.dims = dims
-        self.hbm_config = hbm_config or {
-            "addr_offset": 64,
-            "channel_num": 32,
-            "per_channel_latency": 2,
-            "per_channel_init_interval": 2,
-            "per_channel_outstanding": 1,
-            "per_channel_start_up_time": 14,
-        }
-        self.sim_config = sim_config or {
-            "channel_depth": 2,
-            "functional_sim": True,
-            "mock_bf16": False,
-        }
+
+        mc = load_machine_config(path=machine_config_path, preset=machine_config_preset)
+        self.total_compute_bw = mc["total_compute_bw"]
+        self.on_chip_memory_bytes = mc["on_chip_memory_bytes"]
+        self.hbm_config = mc["hbm"]
+        self.sim_config = mc["sim"]
 
     def profile(self) -> StepKernelProperties:
         """Build graph, run symbolic analysis, and (if cycle_accurate) run sim + correctness.
@@ -76,6 +116,24 @@ class StepKernel:
         # Step 2: Symbolic profiling (always — gives memory traffic estimates for LLM feedback)
         symbolic_metrics = self._symbolic_profile(graph)
         props.metadata.update(symbolic_metrics)
+
+        # Step 2.5: Validate hardware constraints
+        total_used = sum(node.compute_bw for node in graph.nodes() if hasattr(node, "compute_bw"))
+        props.metadata["total_compute_bw_used"] = total_used
+        if total_used > self.total_compute_bw:
+            props.correct = False
+            props.metadata["correctness_error"] = (
+                f"Compute bandwidth budget exceeded: used {total_used}, limit {self.total_compute_bw}"
+            )
+            return props
+
+        on_chip_bytes = symbolic_metrics.get("on_chip_bytes")
+        if isinstance(on_chip_bytes, (int, float)) and on_chip_bytes > self.on_chip_memory_bytes:
+            props.correct = False
+            props.metadata["correctness_error"] = (
+                f"On-chip memory exceeded: {int(on_chip_bytes)} bytes, limit {self.on_chip_memory_bytes} bytes"
+            )
+            return props
 
         # Step 3: Cycle-accurate simulation + correctness check
         if self.profile_mode == ProfileMode.CYCLE_ACCURATE:
@@ -201,15 +259,20 @@ class StepKernel:
         sim_tensor = torch.from_numpy(sim_output).float()
         gold = gold_source.compute_gold(*gold_args).float()
 
-        if sim_tensor.shape != gold.shape:
+        # Baselines may flatten batch dimensions (e.g. SDPA merges batch*heads),
+        # so compare by total element count after flattening both.
+        if sim_tensor.numel() != gold.numel():
             result["correct"] = False
             result["correctness_error"] = (
-                f"Shape mismatch: sim={tuple(sim_tensor.shape)} gold={tuple(gold.shape)}"
+                f"Element count mismatch: sim={sim_tensor.numel()} gold={gold.numel()} "
+                f"(sim shape={tuple(sim_tensor.shape)}, gold shape={tuple(gold.shape)})"
             )
             return result
 
-        max_diff = (sim_tensor - gold).abs().max().item()
-        passed = torch.allclose(sim_tensor, gold, rtol=RTOL, atol=ATOL)
+        sim_flat = sim_tensor.reshape(-1)
+        gold_flat = gold.reshape(-1)
+        max_diff = (sim_flat - gold_flat).abs().max().item()
+        passed = torch.allclose(sim_flat, gold_flat, rtol=RTOL, atol=ATOL)
 
         result["correct"] = passed
         result["max_diff"] = max_diff

@@ -16,6 +16,8 @@ parser.add_argument("--benchmarks", type=str, default="all",
                     help="Comma-separated benchmark names, or 'all' for every benchmark with a baseline")
 parser.add_argument("--presets", type=str, default="all",
                     help="Comma-separated preset names, or 'all' for every preset per benchmark")
+parser.add_argument("--machine_config_path", type=str, default=None, help="Path to machine_config.yaml")
+parser.add_argument("--machine_config_preset", type=str, default="default", help="Preset name in machine_config.yaml")
 args = parser.parse_args()
 
 stepbench_base_path = os.path.join(os.getenv("ACCELOPT_BASE_DIR"), "StepBench")
@@ -70,6 +72,8 @@ def construct_profile_table():
             problem_path=row["task"],
             profile_mode=profile_mode,
             dims=dims,
+            machine_config_path=args.machine_config_path,
+            machine_config_preset=args.machine_config_preset,
         )
         props = step_kernel.profile()
         profile_data = {"profile": json.dumps(props.metadata)}
