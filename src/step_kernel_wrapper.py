@@ -11,11 +11,11 @@ import torch
 import sympy
 from networkx import MultiDiGraph
 
-from accelopt.eval_step import StepKernelProperties
+from src.eval_step import StepKernelProperties
 
-# Default machine config path (relative to this file -> StepBench/machine_config.yaml)
+# Default machine config path (relative to this file -> ../machine_config.yaml)
 _DEFAULT_MACHINE_CONFIG = os.path.join(
-    os.path.dirname(__file__), "..", "StepBench", "machine_config.yaml"
+    os.path.dirname(__file__), "..", "machine_config.yaml"
 )
 
 
@@ -263,8 +263,6 @@ class StepKernel:
         sim_tensor = torch.from_numpy(sim_output).float()
         gold = gold_source.compute_gold(*gold_args).float()
 
-        # Baselines may flatten batch dimensions (e.g. SDPA merges batch*heads),
-        # so compare by total element count after flattening both.
         if sim_tensor.numel() != gold.numel():
             result["correct"] = False
             result["correctness_error"] = (
@@ -273,10 +271,13 @@ class StepKernel:
             )
             return result
 
-        sim_flat = sim_tensor.reshape(-1)
-        gold_flat = gold.reshape(-1)
-        max_diff = (sim_flat - gold_flat).abs().max().item()
-        passed = torch.allclose(sim_flat, gold_flat, rtol=RTOL, atol=ATOL)
+        # Pad sim to match gold's ndim (e.g. (64, 256) vs (1, 1, 64, 256)),
+        # then reshape to gold's shape so element ordering is preserved.
+        while sim_tensor.ndim < gold.ndim:
+            sim_tensor = sim_tensor.unsqueeze(0)
+        sim_tensor = sim_tensor.reshape(gold.shape)
+        max_diff = (sim_tensor - gold).abs().max().item()
+        passed = torch.allclose(sim_tensor, gold, rtol=RTOL, atol=ATOL)
 
         result["correct"] = passed
         result["max_diff"] = max_diff

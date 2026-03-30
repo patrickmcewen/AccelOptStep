@@ -1,9 +1,9 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(
     name="accelopt",
     version="0.0.1",
-    packages=["accelopt"],
+    packages=find_packages(),
     install_requires=[
         "openai-agents>=0.13",
         "openai>=2.0",

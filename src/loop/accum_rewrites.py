@@ -31,7 +31,7 @@ def run(
     pipeline: str = "pytorch-step",
     stage_config: dict | None = None,
 ) -> None:
-    from pipeline_registry import resolve_pipeline
+    from src.pipeline_registry import resolve_pipeline
     pipeline_cfg = resolve_pipeline(pipeline)
     if stage_config:
         pipeline_cfg = {**pipeline_cfg, **stage_config}
@@ -57,7 +57,7 @@ def run(
     start_time = _timestamp()
 
     (exp_dir / "rewrites").mkdir(parents=True, exist_ok=True)
-    rewrites_selection_exec = base_dir / "scripts" / "rewrites_selection.py"
+    rewrites_selection_exec = base_dir / "src" / "agents" / "rewrites_selection.py"
     executor_results_path = exp_dir / "candidates" / "last_iteration_executor_results.json"
     base_prompt_path = prompts_base / "summarizer_prompts" / "base_prompt.txt"
     user_template_path = prompts_base / "summarizer_prompts" / "user_prompt_template.txt"
@@ -91,7 +91,7 @@ def run(
     # Select candidates
     start_time = _timestamp()
 
-    select_candidates_exec = base_dir / "scripts" / "select_candidates.py"
+    select_candidates_exec = base_dir / "src" / "agents" / "select_candidates.py"
     output_base_path = exp_dir / "candidates"
     select_cmd = [
         sys.executable, str(select_candidates_exec),
@@ -112,7 +112,7 @@ def run(
     # Profile candidates
     start_time = _timestamp()
 
-    sequential_profile_exec = base_dir / "scripts" / "sequential_profile.py"
+    sequential_profile_exec = base_dir / "src" / "agents" / "sequential_profile.py"
     candidates_path = exp_dir / "candidates" / "candidates.csv"
     profile_output_path = exp_dir / "candidates" / "profile_results.csv"
     subprocess.run(

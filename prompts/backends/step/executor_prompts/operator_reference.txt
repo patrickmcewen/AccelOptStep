@@ -161,7 +161,7 @@ Bufferize(graph, input, rank=int, off_chip=False)
 ```
 **Shape rule:** Output shape = `input.shape[:-rank]`. The last `rank` dimensions are absorbed into a Buffer.
 **Dtype change:** `Tile(r,c)` → `Buffer(buff_dtype=Tile(r,c), shape=input.shape[-rank:])`.
-**Constraint:** Input must be Tile dtype.
+**Constraint:** Input must be Tile dtype. `rank` must be >= 1 (rank=0 is invalid — there must be at least one dimension to buffer).
 
 ### Streamify — Read buffer back as a stream
 ```python

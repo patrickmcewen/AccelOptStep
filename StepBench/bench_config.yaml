@@ -118,7 +118,7 @@ sdpa:
 
 minigpt_block:
   problem: problems/minigpt_block.py
-  baseline: null
+  baseline: baselines/minigpt_block.py
   params: [batch_size, seq_len, n_embd, n_head, max_seqlen]
   presets:
     small:   {batch_size: 4,   seq_len: 64,  n_embd: 128, n_head: 4, max_seqlen: 128}

@@ -7,7 +7,7 @@ from step_py.datatype import Float32, Tile
 from step_py.functions import map_accum_fn, map_fn, accum_fn, init_fn
 from step_py.ops import (
     OffChipLoad, BinaryMapAccum, BinaryMap, UnaryMap,
-    Accum, Broadcast, OffChipStore,
+    Accum, Broadcast, OffChipStore, Reshape,
 )
 from rewrite.broadcast import infer_broadcast
 
@@ -170,10 +170,20 @@ def build_graph(dims):
         compute_bw=div_bw,
     )
 
-    # ===== Step 6: Store output =====
+    # ===== Step 6: Reshape stream to (outer, seq_q_tiles, 1) =====
+    # Without this, the store lays out seq_q tiles as columns, producing
+    # (outer*tile_seq, seq_tiles*dim) which has wrong element ordering.
+    # Splitting the last dim with chunk_size=1 makes tensor_shape_tiled
+    # (outer, seq_q_tiles, 1) so the store outputs (outer, seq*tile_seq, dim).
+    reshaped = Reshape(
+        graph=graph, input=softmax_out,
+        chunk_size=1, reshape_rank=0, write_back_mu=False,
+    )
+
+    # ===== Step 7: Store output =====
     output_op = OffChipStore(
         graph=graph,
-        input=softmax_out,
+        input=reshaped,
         par_dispatch=par_dispatch,
         store_file_name="output",
     )

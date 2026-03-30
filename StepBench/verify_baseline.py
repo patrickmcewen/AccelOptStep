@@ -110,17 +110,19 @@ def verify_baseline(problem_path, baseline_path, dims):
     sim_tensor = torch.from_numpy(sim_output).float()
     gold = problem_mod.compute_gold(dims).float()
 
-    # Baselines may flatten batch dimensions (e.g. SDPA merges batch*heads),
-    # so compare by total element count after flattening both.
     assert sim_tensor.numel() == gold.numel(), (
         f"Element count mismatch: sim={sim_tensor.numel()} gold={gold.numel()} "
         f"(sim shape={tuple(sim_tensor.shape)}, gold shape={tuple(gold.shape)})"
     )
-    sim_flat = sim_tensor.reshape(-1)
-    gold_flat = gold.reshape(-1)
 
-    max_diff = (sim_flat - gold_flat).abs().max().item()
-    passed = torch.allclose(sim_flat, gold_flat, rtol=RTOL, atol=ATOL)
+    # Pad sim to match gold's ndim (e.g. (64, 256) vs (1, 1, 64, 256)),
+    # then reshape to gold's shape so element ordering is preserved.
+    while sim_tensor.ndim < gold.ndim:
+        sim_tensor = sim_tensor.unsqueeze(0)
+    sim_tensor = sim_tensor.reshape(gold.shape)
+
+    max_diff = (sim_tensor - gold).abs().max().item()
+    passed = torch.allclose(sim_tensor, gold, rtol=RTOL, atol=ATOL)
 
     result["correct"] = passed
     result["max_diff"] = max_diff

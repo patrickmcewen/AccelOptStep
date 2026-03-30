@@ -4,7 +4,7 @@ from pydantic import BaseModel
 import asyncio
 import logfire
 from datetime import datetime, timezone
-from accelopt.utils import retry_runner_safer
+from src.utils import retry_runner_safer
 import json
 from typing import List
 import random
@@ -49,7 +49,7 @@ def construct_user_prompt(user_prompt_config: UserPromptConfig):
         middleend_block = ""
     user_prompt = user_prompt.replace("{middleend_context}", middleend_block)
     if user_prompt_config.machine_config:
-        from accelopt.step_kernel_wrapper import apply_prompt_substitutions
+        from src.step_kernel_wrapper import apply_prompt_substitutions
         user_prompt = apply_prompt_substitutions(user_prompt, user_prompt_config.machine_config)
     return user_prompt
 
@@ -165,14 +165,14 @@ if __name__ == "__main__":
     with open(time_record_path, "w") as f:
         f.write(f"{current_time},")
 
-    from pipeline_registry import resolve_pipeline
+    from src.pipeline_registry import resolve_pipeline
     pipeline = resolve_pipeline(args.pipeline)
     if args.stage_config:
         import json as _json
         pipeline = {**pipeline, **_json.loads(args.stage_config)}
 
     if pipeline["needs_machine_config"]:
-        from accelopt.step_kernel_wrapper import load_machine_config
+        from src.step_kernel_wrapper import load_machine_config
         mc = load_machine_config(path=args.machine_config_path, preset=args.machine_config_preset)
     else:
         mc = None

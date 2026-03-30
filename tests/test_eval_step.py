@@ -4,7 +4,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from accelopt.eval_step import check_step_correctness, StepKernelProperties
+from src.eval_step import check_step_correctness, StepKernelProperties
 
 
 def test_correct_output_passes():

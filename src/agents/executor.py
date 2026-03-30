@@ -15,8 +15,8 @@ import asyncio
 import pandas as pd
 from pydantic import BaseModel
 import logfire
-from accelopt.utils import extract_first_code, retry_runner_safer
-from accelopt.eval_step import StepKernelProperties
+from src.utils import extract_first_code, retry_runner_safer
+from src.eval_step import StepKernelProperties
 from agents import Agent, AsyncOpenAI, OpenAIChatCompletionsModel, set_tracing_disabled, RunConfig, ModelSettings
 
 # -------------------------- Logging --------------------------
@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 STEP_IMPORTS = """
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from networkx import MultiDiGraph
 from step_py.ops import (
     OffChipLoad, OffChipStore, BinaryMap, UnaryMap, BinaryMapAccum,
@@ -189,7 +190,7 @@ def _profile_worker(program_path, problem_path, profile_mode, result_path, dims=
     """Profile a STeP kernel. Runs in a subprocess for isolation."""
     import json, traceback
     try:
-        from accelopt.step_kernel_wrapper import StepKernel, ProfileMode
+        from src.step_kernel_wrapper import StepKernel, ProfileMode
 
         with open(program_path) as f:
             code = f.read()
@@ -217,7 +218,7 @@ def _nki_profile_worker(program_path, base_numpy_path, result_path, rel_tol):
     """Profile an NKI kernel. Runs in a subprocess for isolation."""
     import json, traceback
     try:
-        from accelopt.nki_kernel_wrapper import NKIKernel
+        from src.nki_kernel_wrapper import NKIKernel
         k = NKIKernel(program_path, base_numpy_path)
         k.rel_tol = rel_tol
         k.profile([])
@@ -430,13 +431,13 @@ async def main(args):
     start_time = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
 
     # load inputs and substitute machine config placeholders
-    from pipeline_registry import resolve_pipeline
+    from src.pipeline_registry import resolve_pipeline
     pipeline = resolve_pipeline(args.pipeline)
     if args.stage_config:
         pipeline = {**pipeline, **json.loads(args.stage_config)}
 
     if pipeline["needs_machine_config"]:
-        from accelopt.step_kernel_wrapper import load_machine_config, apply_prompt_substitutions
+        from src.step_kernel_wrapper import load_machine_config, apply_prompt_substitutions
         mc = load_machine_config(path=args.machine_config_path, preset=args.machine_config_preset)
     else:
         mc = None

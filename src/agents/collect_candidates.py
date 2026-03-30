@@ -3,7 +3,7 @@ import os
 import argparse
 import pandas as pd
 import json
-from accelopt.utils import get_case_name
+from src.utils import get_case_name
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--output_candidates_path", type=str, required=True)
@@ -18,12 +18,24 @@ parser.add_argument("--machine_config_path", type=str, default=None, help="Path 
 parser.add_argument("--machine_config_preset", type=str, default="default", help="Preset name in machine_config.yaml")
 parser.add_argument("--pipeline", type=str, default="pytorch-step")
 parser.add_argument("--stage_config", type=str, default=None, help="JSON dict of pipeline overrides for multi-stage execution")
+parser.add_argument("--bench_dir", type=str, default=None, help="Override bench_dir from pipeline (e.g. NKIBench)")
 args = parser.parse_args()
 
-from pipeline_registry import resolve_pipeline
+from src.pipeline_registry import resolve_pipeline
 pipeline = resolve_pipeline(args.pipeline)
 if args.stage_config:
     pipeline = {**pipeline, **json.loads(args.stage_config)}
+if args.bench_dir:
+    pipeline["bench_dir"] = args.bench_dir
+    # Override problem_key to match the target bench suite's naming convention.
+    # baseline_key stays as-is: it's determined by the profiler (step→"baseline", nki→"kernel"),
+    # and both NKIBench and StepBench use "baseline" for STeP baselines.
+    _BENCH_DIR_PROBLEM_KEY = {
+        "NKIBench": "task",
+        "StepBench": "problem",
+    }
+    assert args.bench_dir in _BENCH_DIR_PROBLEM_KEY, f"Unknown bench_dir: {args.bench_dir}"
+    pipeline["problem_key"] = _BENCH_DIR_PROBLEM_KEY[args.bench_dir]
 
 
 def construct_table():
@@ -74,7 +86,7 @@ def construct_profile_table():
     output_rows = []
 
     if pipeline["profiler"] == "nki":
-        from accelopt.nki_kernel_wrapper import NKIKernel
+        from src.nki_kernel_wrapper import NKIKernel
         for index, row in df.iterrows():
             dims = json.loads(row["values"])
             nki_kernel = NKIKernel(row["kernel"], row["task"])
@@ -84,7 +96,7 @@ def construct_profile_table():
             profile_data = {"profile": json.dumps(props.metadata)}
             output_rows.append({**row, **profile_data})
     else:
-        from accelopt.step_kernel_wrapper import StepKernel, ProfileMode
+        from src.step_kernel_wrapper import StepKernel, ProfileMode
         profile_mode = ProfileMode(args.profile_mode)
         for index, row in df.iterrows():
             dims = json.loads(row["values"])

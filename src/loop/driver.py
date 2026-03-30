@@ -10,20 +10,14 @@ import argparse
 import json
 import os
 import shutil
-import sys
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-# Ensure AccelOptStep root is importable when run standalone
-_accelopt_root = Path(__file__).resolve().parent.parent.parent
-if str(_accelopt_root) not in sys.path:
-    sys.path.insert(0, str(_accelopt_root))
-
-from templates.complete_local import run_accum_rewrites, run_body, run_first, run_init
-from templates.complete_local.logging_config import setup_problem_logger
+from src.loop import accum_rewrites, body_iter, first_iter, init_iter
+from src.loop.logging_config import setup_problem_logger
 
 LA = ZoneInfo("America/Los_Angeles")
 
@@ -40,14 +34,14 @@ def _reprofile_baselines(profile_csv: Path, pipeline_cfg: dict, profile_mode: st
     new_rows = []
 
     if pipeline_cfg["profiler"] == "nki":
-        from accelopt.nki_kernel_wrapper import NKIKernel
+        from src.nki_kernel_wrapper import NKIKernel
         for _, row in df.iterrows():
             nki_kernel = NKIKernel(row["kernel"], row["task"])
             nki_kernel.rel_tol = 2e-5
             nki_kernel.profile([])
             new_rows.append({**row, "profile": json.dumps(nki_kernel.res.metadata)})
     else:
-        from accelopt.step_kernel_wrapper import StepKernel, ProfileMode
+        from src.step_kernel_wrapper import StepKernel, ProfileMode
         pm = ProfileMode.SYMBOLIC if profile_mode == "symbolic" else ProfileMode.CYCLE_ACCURATE
         for _, row in df.iterrows():
             dims = json.loads(row["values"])
@@ -97,7 +91,7 @@ def _run_stage(
 
     Returns the exp_date of the last iteration (for extracting best results).
     """
-    from pipeline_registry import resolve_pipeline
+    from src.pipeline_registry import resolve_pipeline
     pipeline_cfg = resolve_pipeline(pipeline)
     if stage_config:
         pipeline_cfg = {**pipeline_cfg, **stage_config}
@@ -125,7 +119,7 @@ def _run_stage(
         with open(log_path, "a") as f:
             f.write(f"{init_exp_date}\n")
 
-        run_first.run(
+        first_iter.run(
             exp_date=init_exp_date,
             exp_base_dir=exp_base_dir,
             experience_list_path=experience_list_path,
@@ -156,7 +150,7 @@ def _run_stage(
         experience_list_path = exp_base_dir / last_exp_date / "rewrites" / "aggregated_rewrites_list.json"
         (exp_base_dir / current_exp_date).mkdir(parents=True, exist_ok=True)
 
-        run_init.run(
+        init_iter.run(
             exp_date=current_exp_date,
             last_exp_date=last_exp_date,
             exp_base_dir=exp_base_dir,
@@ -166,7 +160,7 @@ def _run_stage(
             log_file=log_file,
         )
 
-        run_accum_rewrites.run(
+        accum_rewrites.run(
             exp_date=current_exp_date,
             exp_base_dir=exp_base_dir,
             profile_mode=profile_mode,
@@ -185,7 +179,7 @@ def _run_stage(
             stage_config=stage_config,
         )
 
-        run_body.run(
+        body_iter.run(
             exp_date=current_exp_date,
             exp_base_dir=exp_base_dir,
             experience_list_path=experience_list_path,
@@ -307,7 +301,7 @@ def run(
     resume: bool = False,
 ) -> None:
     setup_problem_logger(log_file)
-    from pipeline_registry import resolve_pipeline, get_stage_configs
+    from src.pipeline_registry import resolve_pipeline, get_stage_configs
     pipeline_cfg = resolve_pipeline(pipeline)
 
     stage1_config, stage2_config = get_stage_configs(pipeline)
@@ -402,7 +396,7 @@ def _run_multi_stage_fresh(
     stage1_machine_config_path = machine_config_path
     if stage1_config.get("needs_machine_config") and not machine_config_path:
         base_dir = Path(os.environ["ACCELOPT_BASE_DIR"])
-        stage1_machine_config_path = str(base_dir / "StepBench" / "machine_config.yaml")
+        stage1_machine_config_path = str(base_dir / "machine_config.yaml")
 
     # ---- Stage 1: Middleend ----
     print(f">>> STAGE 1: {pipeline_cfg['middleend'].upper()} middleend optimization")
@@ -531,7 +525,7 @@ def _run_resume(
     stage1_machine_config_path = machine_config_path
     if stage1_config.get("needs_machine_config") and not machine_config_path:
         base_dir = Path(os.environ["ACCELOPT_BASE_DIR"])
-        stage1_machine_config_path = str(base_dir / "StepBench" / "machine_config.yaml")
+        stage1_machine_config_path = str(base_dir / "machine_config.yaml")
 
     stage1_complete = len(s1_entries) >= stage1_expected
 

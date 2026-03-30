@@ -30,7 +30,7 @@ original_base_prompt_path = args.original_base_prompt_path
 summarizer_output_list_path = args.summarizer_output_list_path
 new_base_prompt_path = args.new_base_prompt_path
 
-from accelopt.step_kernel_wrapper import load_machine_config, apply_prompt_substitutions
+from src.step_kernel_wrapper import load_machine_config, apply_prompt_substitutions
 mc = load_machine_config(path=args.machine_config_path, preset=args.machine_config_preset)
 
 with open(original_base_prompt_path, "r") as f:

@@ -25,7 +25,7 @@ def run(
     pipeline: str = "pytorch-step",
     stage_config: dict | None = None,
 ) -> None:
-    from pipeline_registry import resolve_pipeline
+    from src.pipeline_registry import resolve_pipeline
     pipeline_cfg = resolve_pipeline(pipeline)
     if stage_config:
         pipeline_cfg = {**pipeline_cfg, **stage_config}
@@ -48,7 +48,7 @@ def run(
     print(f"LOGFIRE_ENVIRONMENT: {logfire_env_name}")
 
     # Construct experience (with prior rewrites)
-    construct_experience_exec = base_dir / "scripts" / "construct_experience.py"
+    construct_experience_exec = base_dir / "src" / "agents" / "construct_experience.py"
     construct_experience_output_path = exp_dir / "rewrites" / "aggregated_rewrites_list.json"
     original_rewrite_list_path = exp_dir / "rewrites" / "rewrites_selection_output_list.json"
     subprocess.run(
@@ -82,7 +82,7 @@ def run(
     subprocess.run(construct_prompt_cmd, cwd=str(exp_dir), check=True)
 
     # Planner
-    planner_exec = base_dir / "scripts" / "planner.py"
+    planner_exec = base_dir / "src" / "agents" / "planner.py"
     planner_output_path = exp_dir / "planner_results.json"
     planner_user_template_path = prompts_base / "planner_prompts" / "planner_prompt_template.txt"
     planner_profile_result_path = exp_dir / "candidates" / "profile_results.csv"
@@ -109,7 +109,7 @@ def run(
     subprocess.run(planner_cmd, cwd=str(exp_dir), check=True)
 
     # Executor
-    executor_exec = base_dir / "scripts" / "executor.py"
+    executor_exec = base_dir / "src" / "agents" / "executor.py"
     executor_base_prompt_path = prompts_base / "executor_prompts" / "base_prompt.txt"
     executor_user_template_path = prompts_base / "executor_prompts" / "user_prompt_template.txt"
     executor_model_config_path = exp_base_dir / "configs" / "executor_config.json"

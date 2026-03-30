@@ -14,7 +14,7 @@ def test_baseline_profile_to_prompt():
     with open(baseline_path) as f:
         code = f.read()
 
-    from accelopt.step_kernel_wrapper import StepKernel, ProfileMode
+    from src.step_kernel_wrapper import StepKernel, ProfileMode
 
     dims = get_dims("gemm", "small")
     kernel = StepKernel(
@@ -47,7 +47,7 @@ def test_gemm_swish_scaling_baseline_profiles():
     with open(baseline_path) as f:
         code = f.read()
 
-    from accelopt.step_kernel_wrapper import StepKernel, ProfileMode
+    from src.step_kernel_wrapper import StepKernel, ProfileMode
 
     dims = get_dims("gemm_swish_scaling", "small")
     kernel = StepKernel(
@@ -67,7 +67,7 @@ def test_sdpa_baseline_profiles():
     with open(baseline_path) as f:
         code = f.read()
 
-    from accelopt.step_kernel_wrapper import StepKernel, ProfileMode
+    from src.step_kernel_wrapper import StepKernel, ProfileMode
 
     dims = get_dims("sdpa", "small")
     kernel = StepKernel(

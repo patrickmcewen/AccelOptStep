@@ -49,7 +49,7 @@ def build_graph(dims):
     # Bandwidth budget = 4096
     matmul_bw = 3072
     accum_bw = 512
-    retile_bw = 512
+    retile_bw = [256, 256]  # repeated x2
 
     graph = MultiDiGraph()
 
@@ -133,7 +133,7 @@ def build_graph(dims):
             init_fn=init_fn.Empty(shape=(0, D), dtype=Float32()),
             accum_rank=1,
             write_back_mu=False,
-            compute_bw=retile_bw,
+            compute_bw=retile_bw[i],
         )
         for i in range(E)
     ]

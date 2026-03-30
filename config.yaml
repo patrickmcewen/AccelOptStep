@@ -61,6 +61,45 @@ pytorch_step_other_benchmarks:
   benchmarks: [moe, sdpa]
   presets: [default] 
 
+test_small_scale_sdpa:
+  project_name: pytorch-step
+  iters: 3
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+  benchmarks: [sdpa]
+  presets: [small]
+
+test_default_scale_sdpa:
+  project_name: pytorch-step
+  iters: 3
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+  benchmarks: [sdpa]
+  presets: [default]
+
+test_small_scale_moe:
+  project_name: pytorch-step
+  iters: 3
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+  benchmarks: [moe]
+  presets: [small]
+
 sdpa_only:
   iters: 2
   breadth: 2
@@ -179,4 +218,18 @@ numpy_nki_small:
   max_threshold: 1.01
   min_threshold: 1.01
   benchmarks: [matmul_add_rmsnorm, rope_single_freq_apply, gqa_full]
+  presets: [default]
+
+numpy_step_matmul_add_rmsnorm:
+  pipeline: numpy-step
+  bench_dir: NKIBench
+  iters: 3
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+  benchmarks: [matmul_add_rmsnorm]
   presets: [default]

@@ -1,7 +1,7 @@
 import json
 import pandas as pd
 import os
-from accelopt.utils import init_service_name
+from src.utils import init_service_name
 import logging
 
 STEP_PREAMBLE = """\
@@ -56,7 +56,7 @@ if __name__ == "__main__":
         _root.addHandler(_handler)
         _root.setLevel(logging.INFO)
 
-    from pipeline_registry import resolve_pipeline
+    from src.pipeline_registry import resolve_pipeline
     pipeline = resolve_pipeline(args.pipeline)
     if args.stage_config:
         pipeline = {**pipeline, **json.loads(args.stage_config)}
