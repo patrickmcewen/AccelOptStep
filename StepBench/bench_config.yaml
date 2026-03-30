@@ -146,3 +146,11 @@ mlp_shallow_wide:
   presets:
     small:   {batch_size: 16,  input_size: 256,   hidden_layer_sizes: [512, 512],     output_size: 256}
     default: {batch_size: 128, input_size: 16384, hidden_layer_sizes: [32768, 32768], output_size: 16384}
+
+moe:
+  problem: problems/moe.py
+  baseline: baselines/moe.py
+  params: [num_tokens, hidden_dim, intermediate_dim, num_experts]
+  presets:
+    small:   {num_tokens: 64,  hidden_dim: 64,  intermediate_dim: 256, num_experts: 2}
+    default: {num_tokens: 256, hidden_dim: 128, intermediate_dim: 256, num_experts: 4}

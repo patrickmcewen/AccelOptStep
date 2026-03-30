@@ -8,7 +8,7 @@
 
 # --- Defaults (inherited by all presets unless overridden) ---
 defaults:
-  project_name: pytorch-step
+  project_name: combined-flow
   org_name: pmcewen
   profile_mode: cycle_accurate
   pipeline: pytorch-step        # valid values: pytorch-step, numpy-nki, pytorch-nki, numpy-step, pytorch-step-nki
@@ -28,12 +28,14 @@ defaults:
   dry_run: false
   logfire_enabled: true   # set to false to skip logfire setup (useful for local/test runs)
   machine_config: default
+  middleend_iters: null    # if set, Stage 1 (middleend) uses this many iters; Stage 2 uses 'iters'
 
 # --- Presets ---
 
 full_run: {}  # uses all defaults as-is
 
 test_small_scale_run:
+  project_name: pytorch-step
   iters: 3
   breadth: 2
   num_samples: 1
@@ -44,6 +46,19 @@ test_small_scale_run:
   min_threshold: 1.01
   benchmarks: [gemm, gemm_swish_scaling, sdpa]
   presets: [small]
+
+pytorch_nki_other_benchmarks:
+  project_name: pytorch-step
+  iters: 3
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+  benchmarks: [moe, gemm_swish_scaling, sdpa]
+  presets: [small] 
 
 sdpa_only:
   iters: 2
@@ -104,7 +119,7 @@ nki_smoke_test:
 pytorch_nki_smoke_test:
   pipeline: pytorch-nki
   benchmarks: all
-  presets: [small]
+  presets: [default]     # NKIBench only has 'default' presets, not 'small'
   iters: 1
   breadth: 1
   num_samples: 1
@@ -123,7 +138,7 @@ numpy_step_smoke_test:
 pytorch_step_nki_smoke_test:
   pipeline: pytorch-step-nki
   benchmarks: all
-  presets: [small]
+  presets: [default]     # NKIBench only has 'default' presets, not 'small'
   iters: 1
   breadth: 1
   num_samples: 1
@@ -132,8 +147,8 @@ pytorch_step_nki_smoke_test:
 
 pytorch_step_nki_small:
   pipeline: pytorch-step-nki
-  benchmarks: [gemm, gemm_swish_scaling, sdpa]
-  presets: [small]
+  benchmarks: [matmul, silu, rmsnorm_matmul]
+  presets: [default]     # NKIBench only has 'default' presets
   iters: 2
   breadth: 2
   num_samples: 2

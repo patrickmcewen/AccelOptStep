@@ -1,6 +1,7 @@
 """Run the first iteration of the experiment loop (no prior rewrites)."""
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -22,9 +23,12 @@ def run(
     machine_config_path: str | None = None,
     machine_config_preset: str = "default",
     pipeline: str = "pytorch-step",
+    stage_config: dict | None = None,
 ) -> None:
     from pipeline_registry import resolve_pipeline
     pipeline_cfg = resolve_pipeline(pipeline)
+    if stage_config:
+        pipeline_cfg = {**pipeline_cfg, **stage_config}
     base_dir = Path(os.environ["ACCELOPT_BASE_DIR"])
     prompts_base = base_dir / "prompts" / pipeline_cfg["prompts_subdir"]
     exp_dir = exp_base_dir / exp_date
@@ -101,6 +105,8 @@ def run(
     ]
     if machine_config_path:
         planner_cmd += ["--machine_config_path", machine_config_path]
+    if stage_config:
+        planner_cmd += ["--stage_config", json.dumps(stage_config)]
     subprocess.run(planner_cmd, cwd=str(exp_dir), check=True)
 
     # Executor
@@ -127,6 +133,8 @@ def run(
     ]
     if machine_config_path:
         executor_cmd += ["--machine_config_path", machine_config_path]
+    if stage_config:
+        executor_cmd += ["--stage_config", json.dumps(stage_config)]
     subprocess.run(
         executor_cmd,
         cwd=str(exp_dir),

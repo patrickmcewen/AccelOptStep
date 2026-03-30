@@ -118,6 +118,7 @@ if __name__ == "__main__":
     parser.add_argument("--machine_config_preset", type=str, default="default", help="Preset name in machine_config.yaml")
     parser.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
     parser.add_argument("--pipeline", type=str, default="pytorch-step")
+    parser.add_argument("--stage_config", type=str, default=None, help="JSON dict of pipeline overrides for multi-stage execution")
     args = parser.parse_args()
 
     if args.log_file:
@@ -148,6 +149,9 @@ if __name__ == "__main__":
 
     from pipeline_registry import resolve_pipeline
     pipeline = resolve_pipeline(args.pipeline)
+    if args.stage_config:
+        import json as _json
+        pipeline = {**pipeline, **_json.loads(args.stage_config)}
 
     if pipeline["needs_machine_config"]:
         from accelopt.step_kernel_wrapper import load_machine_config

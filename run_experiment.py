@@ -58,20 +58,24 @@ def setup_environment(script_dir: Path, cfg: dict):
         step_artifact_src = str((script_dir / ".." / "step_artifact" / "src").resolve())
 
     existing = os.environ.get("PYTHONPATH", "")
-    additions = [step_artifact_src, f"{step_artifact_src}/step_py", f"{step_artifact_src}/sim", f"{step_artifact_src}/proto"]
+    additions = [str(script_dir), step_artifact_src, f"{step_artifact_src}/step_py", f"{step_artifact_src}/sim", f"{step_artifact_src}/proto"]
     os.environ["PYTHONPATH"] = ":".join(additions + ([existing] if existing else []))
 
 
-def generate_profile_csv(script_dir: Path, experiments_dir: Path, profile_csv: Path, profile_mode: str, cfg: dict,
+def generate_profile_csv(script_dir: Path, output_dir: Path, profile_mode: str, cfg: dict,
                          machine_config_path: str | None = None, machine_config_preset: str = "default",
                          pipeline: str = "pytorch-step"):
-    """Step 1: Generate profile_results.csv if it's empty (header-only)."""
+    """Step 1: Generate candidates.csv and profile_results.csv into output_dir (run-local)."""
+
+    candidates_csv = output_dir / "candidates.csv"
+    profile_csv = output_dir / "profile_results.csv"
 
     print(f">>> Generating profile_results.csv (profiling baselines with mode={profile_mode})...")
+    print(f"    Output dir: {output_dir}")
     cmd = [
         sys.executable,
         str(script_dir / "scripts" / "collect_candidates.py"),
-        "--output_candidates_path", str(experiments_dir / "candidates.csv"),
+        "--output_candidates_path", str(candidates_csv),
         "--output_profile_path", str(profile_csv),
         "--profile_mode", profile_mode,
         "--mode", "construct",
@@ -95,10 +99,16 @@ def generate_profile_csv(script_dir: Path, experiments_dir: Path, profile_csv: P
     print(f">>> Done. {new_count} baselines profiled.")
 
 
-def scaffold_experiments(script_dir: Path, experiments_dir: Path, cfg: dict, exp_date_base: str,
+def scaffold_experiments(script_dir: Path, checkpoint_dir: Path, configs_dir: Path, cfg: dict, exp_date_base: str,
                          machine_config_path: str | None = None, machine_config_preset: str = "default",
-                         pipeline: str = "pytorch-step", prompts_dir: str | None = None):
-    """Step 2: Scaffold experiment directories."""
+                         pipeline: str = "pytorch-step"):
+    """Step 2: Scaffold experiment directories.
+
+    Args:
+        checkpoint_dir: The run-local checkpoint directory containing candidates.csv
+                        and profile_results.csv (already created by generate_profile_csv).
+        configs_dir: Path to the shared configs directory to copy into each problem dir.
+    """
     iters = cfg["iters"]
     breadth = cfg["breadth"]
     num_samples = cfg["num_samples"]
@@ -112,6 +122,7 @@ def scaffold_experiments(script_dir: Path, experiments_dir: Path, cfg: dict, exp
     project_name = cfg["project_name"]
     org_name = cfg["org_name"]
     logfire_enabled = cfg.get("logfire_enabled", True)
+    middleend_iters = cfg.get("middleend_iters")
 
     print()
     print(">>> Scaffolding experiment directories...")
@@ -121,14 +132,8 @@ def scaffold_experiments(script_dir: Path, experiments_dir: Path, cfg: dict, exp
     print(f"    TOPK_CANDIDATES={topk_candidates}  TOPK={topk}  EXP_N={exp_n}")
     print()
 
-    exp_base_dir = (experiments_dir / ".." / "checkpoints" / exp_date_base).resolve()
-    assert not exp_base_dir.exists(), (
-        f"Checkpoint directory already exists: {exp_base_dir}\n"
-        f"Choose a different exp_date_base or remove the old directory."
-    )
-
-    proxy_problem_list_df = pd.read_csv(experiments_dir / "candidates.csv")
-    proxy_profile_results_df = pd.read_csv(experiments_dir / "profile_results.csv")
+    proxy_problem_list_df = pd.read_csv(checkpoint_dir / "candidates.csv")
+    proxy_profile_results_df = pd.read_csv(checkpoint_dir / "profile_results.csv")
 
     first_exp_date = datetime.now(LA).strftime("%m-%d-%H-%M")
 
@@ -136,9 +141,9 @@ def scaffold_experiments(script_dir: Path, experiments_dir: Path, cfg: dict, exp
 
     for index, row in proxy_problem_list_df.iterrows():
         service_name = row["service_name"]
-        new_exp_base_dir = exp_base_dir / service_name
+        new_exp_base_dir = checkpoint_dir / service_name
         os.makedirs(new_exp_base_dir, exist_ok=False)
-        shutil.copytree(experiments_dir / "configs", new_exp_base_dir / "configs", dirs_exist_ok=True)
+        shutil.copytree(configs_dir, new_exp_base_dir / "configs", dirs_exist_ok=True)
 
         eval_prefix = f"eval-{index}-{exp_date_base}"
         eval_first_exp_date = f"{eval_prefix}-{first_exp_date}"
@@ -170,11 +175,11 @@ def scaffold_experiments(script_dir: Path, experiments_dir: Path, cfg: dict, exp
             machine_config_path=machine_config_path,
             machine_config_preset=machine_config_preset,
             pipeline=pipeline,
-            prompts_dir=prompts_dir,
+            middleend_iters=middleend_iters,
         )
         problem_configs.append((service_name, loop_kwargs))
 
-        # Generate a standalone .py wrapper for manual execution
+        # Generate a standalone .py wrapper for manual execution (supports --resume flag)
         kwargs_lines = ",\n    ".join(
             f"{k}=Path({str(v)!r})" if isinstance(v, Path) else f"{k}={v!r}"
             for k, v in loop_kwargs.items()
@@ -188,17 +193,18 @@ def scaffold_experiments(script_dir: Path, experiments_dir: Path, cfg: dict, exp
             f"\n"
             f"run(\n"
             f"    {kwargs_lines},\n"
+            f"    resume='--resume' in sys.argv,\n"
             f")\n"
         )
-        wrapper_path = exp_base_dir / f"run_single_loop_{service_name}.py"
+        wrapper_path = checkpoint_dir / f"run_single_loop_{service_name}.py"
         wrapper_path.write_text(wrapper_content)
 
         print(f"  Created: {service_name}")
         print(f"    Dir:    {new_exp_base_dir}")
         print(f"    Script: {wrapper_path}")
 
-    print(f"\nScaffolded {len(proxy_problem_list_df)} problems under {exp_base_dir}")
-    return exp_base_dir, problem_configs
+    print(f"\nScaffolded {len(proxy_problem_list_df)} problems under {checkpoint_dir}")
+    return problem_configs
 
 
 def _tee_to_log(log_path: Path, fn, *args, **kwargs):
@@ -291,17 +297,86 @@ def launch_loops(checkpoint_dir: Path, problem_configs: list, dry_run: bool):
     print(f">>> All problems complete. Results in: {checkpoint_dir}")
 
 
+def resume_experiment(checkpoint_dir: Path, cfg: dict, script_dir: Path,
+                      machine_config_path: str | None, machine_config_preset: str,
+                      pipeline_str: str):
+    """Resume an interrupted experiment from an existing checkpoint directory."""
+    exp_date_base = checkpoint_dir.name
+
+    # Discover problem directories (those with log.txt)
+    problem_dirs = sorted(
+        d for d in checkpoint_dir.iterdir()
+        if d.is_dir() and (d / "log.txt").exists()
+    )
+    assert problem_dirs, f"No problem directories with log.txt found in {checkpoint_dir}"
+
+    iters = cfg["iters"]
+    middleend_iters = cfg.get("middleend_iters")
+
+    problem_configs = []
+    for problem_dir in problem_dirs:
+        service_name = problem_dir.name
+        log_entries = [e.strip() for e in (problem_dir / "log.txt").read_text().splitlines() if e.strip()]
+        assert log_entries, f"log.txt is empty for {service_name}"
+
+        # Reconstruct init_exp_date and exp_date_prefix from first log entry
+        first_entry = log_entries[0]
+        # first_entry format: eval-{index}-{exp_date_base}-{MM-DD-HH-MM}
+        # exp_date_prefix is: eval-{index}-{exp_date_base}
+        prefix_before_base = first_entry.split(f"-{exp_date_base}")[0]
+        exp_date_prefix = f"{prefix_before_base}-{exp_date_base}"
+
+        debug_log_path = problem_dir / "debug.log"
+        loop_kwargs = dict(
+            exp_base_dir=problem_dir,
+            init_exp_date=first_entry,
+            exp_date_prefix=exp_date_prefix,
+            profile_mode=cfg["profile_mode"],
+            project_name=cfg["project_name"],
+            rel_tol=cfg["rel_tol"],
+            org_name=cfg["org_name"],
+            logfire_enabled=cfg.get("logfire_enabled", True),
+            iters=iters,
+            breadth=cfg["breadth"],
+            topk_candidates=cfg["topk_candidates"],
+            num_samples=cfg["num_samples"],
+            max_threshold=cfg["max_threshold"],
+            min_threshold=cfg["min_threshold"],
+            topk=cfg["topk"],
+            exp_n=cfg["exp_n"],
+            log_file=debug_log_path,
+            machine_config_path=machine_config_path,
+            machine_config_preset=machine_config_preset,
+            pipeline=pipeline_str,
+            middleend_iters=middleend_iters,
+            resume=True,
+        )
+        problem_configs.append((service_name, loop_kwargs))
+
+    print(f"\n>>> Resuming experiment from {checkpoint_dir}")
+    print(f"    Problems to resume: {[name for name, _ in problem_configs]}")
+    print()
+
+    for service_name, loop_kwargs in problem_configs:
+        log_path = checkpoint_dir / f"{service_name}.log"
+        print(f"=== Resuming: {service_name} (logging to {log_path}) ===")
+        _tee_to_log(log_path, run_single_loop.run, **loop_kwargs)
+        print(f"=== Finished: {service_name} ===")
+        print()
+
+    print(f">>> All problems complete. Results in: {checkpoint_dir}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="AccelOptStep — Run the agentic optimization loop")
     parser.add_argument("--config_file", default="config.yaml", help="Path to YAML configuration file")
     parser.add_argument("--config", required=True, help="Named preset from the config file (e.g. full_run, test_small_scale_run)")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Path to an existing checkpoint directory to resume from (skips profiling and scaffolding)")
     args = parser.parse_args()
 
     cfg = load_config(args.config_file, args.config)
     script_dir = Path(__file__).resolve().parent
-
-    # Resolve exp_date_base (auto-generate if not in config)
-    exp_date_base = cfg.get("exp_date_base") or datetime.now().strftime("%Y-%m-%d-%H%M%S")
 
     from pipeline_registry import resolve_pipeline
 
@@ -309,7 +384,6 @@ def main():
     pipeline_str = cfg.get("pipeline") or cfg.get("benchmark_type", "pytorch-step")
     pipeline = resolve_pipeline(pipeline_str)
 
-    prompts_dir = str(script_dir / "prompts" / pipeline["prompts_subdir"])
     if pipeline["needs_machine_config"]:
         machine_config_preset = cfg.get("machine_config", "default")
         machine_config_path = str(script_dir / pipeline["bench_dir"] / "machine_config.yaml")
@@ -319,17 +393,39 @@ def main():
 
     setup_environment(script_dir, cfg)
 
-    experiments_dir = script_dir / "experiments" / "full_complete_local"
-    profile_csv = experiments_dir / "profile_results.csv"
+    if args.resume:
+        checkpoint_dir = Path(args.resume).resolve()
+        assert checkpoint_dir.exists(), f"Checkpoint directory does not exist: {checkpoint_dir}"
+        resume_experiment(checkpoint_dir, cfg, script_dir,
+                          machine_config_path=machine_config_path,
+                          machine_config_preset=machine_config_preset,
+                          pipeline_str=pipeline_str)
+        return
 
-    generate_profile_csv(script_dir, experiments_dir, profile_csv, cfg["profile_mode"], cfg,
+    # Resolve exp_date_base (auto-generate if not in config)
+    exp_date_base = cfg.get("exp_date_base") or datetime.now().strftime("%Y-%m-%d-%H%M%S")
+
+    experiments_dir = script_dir / "experiments" / "full_complete_local"
+    configs_dir = experiments_dir / "configs"
+
+    # Create the run-local checkpoint directory up-front so all generated
+    # artifacts (candidates.csv, profile_results.csv) are written here
+    # instead of the shared experiments_dir — avoids race conditions when
+    # multiple flows run concurrently.
+    checkpoint_dir = (script_dir / "experiments" / "checkpoints" / exp_date_base).resolve()
+    assert not checkpoint_dir.exists(), (
+        f"Checkpoint directory already exists: {checkpoint_dir}\n"
+        f"Choose a different exp_date_base or remove the old directory."
+    )
+    os.makedirs(checkpoint_dir)
+
+    generate_profile_csv(script_dir, checkpoint_dir, cfg["profile_mode"], cfg,
                          machine_config_path=machine_config_path, machine_config_preset=machine_config_preset,
                          pipeline=pipeline_str)
-    checkpoint_dir, problem_configs = scaffold_experiments(script_dir, experiments_dir, cfg, exp_date_base,
-                                                          machine_config_path=machine_config_path,
-                                                          machine_config_preset=machine_config_preset,
-                                                          pipeline=pipeline_str,
-                                                          prompts_dir=prompts_dir)
+    problem_configs = scaffold_experiments(script_dir, checkpoint_dir, configs_dir, cfg, exp_date_base,
+                                           machine_config_path=machine_config_path,
+                                           machine_config_preset=machine_config_preset,
+                                           pipeline=pipeline_str)
     launch_loops(checkpoint_dir, problem_configs, cfg.get("dry_run", False))
 
 

@@ -168,7 +168,11 @@ class StepKernel:
         os.unlink(tmp_path)
 
         assert hasattr(mod, "build_graph"), "Generated code must define build_graph()"
-        if self.dims is not None:
+        # LLM-generated code may define build_graph() or build_graph(dims).
+        # Inspect the signature and call accordingly.
+        import inspect
+        sig = inspect.signature(mod.build_graph)
+        if len(sig.parameters) > 0 and self.dims is not None:
             graph, output_op = mod.build_graph(self.dims)
         else:
             graph, output_op = mod.build_graph()

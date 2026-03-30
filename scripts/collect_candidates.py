@@ -17,10 +17,13 @@ parser.add_argument("--presets", type=str, default="all",
 parser.add_argument("--machine_config_path", type=str, default=None, help="Path to machine_config.yaml")
 parser.add_argument("--machine_config_preset", type=str, default="default", help="Preset name in machine_config.yaml")
 parser.add_argument("--pipeline", type=str, default="pytorch-step")
+parser.add_argument("--stage_config", type=str, default=None, help="JSON dict of pipeline overrides for multi-stage execution")
 args = parser.parse_args()
 
 from pipeline_registry import resolve_pipeline
 pipeline = resolve_pipeline(args.pipeline)
+if args.stage_config:
+    pipeline = {**pipeline, **json.loads(args.stage_config)}
 
 
 def construct_table():
@@ -29,7 +32,7 @@ def construct_table():
     output_rows = []
 
     bench_dir = os.path.join(os.getenv("ACCELOPT_BASE_DIR"), pipeline["bench_dir"])
-    if pipeline["frontend"] == "numpy":
+    if pipeline["bench_dir"] == "NKIBench":
         from NKIBench.loader import load_config
     else:
         from StepBench.loader import load_config

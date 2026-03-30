@@ -39,6 +39,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_base_path", type=str, required=True)
     parser.add_argument("--topk", type=int, default=1)
     parser.add_argument("--pipeline", type=str, default="pytorch-step")
+    parser.add_argument("--stage_config", type=str, default=None, help="JSON dict of pipeline overrides for multi-stage execution")
     parser.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
     args = parser.parse_args()
 
@@ -57,6 +58,8 @@ if __name__ == "__main__":
 
     from pipeline_registry import resolve_pipeline
     pipeline = resolve_pipeline(args.pipeline)
+    if args.stage_config:
+        pipeline = {**pipeline, **json.loads(args.stage_config)}
 
     with open(args.executor_results_path, "r") as f:
         executor_results = json.load(f)

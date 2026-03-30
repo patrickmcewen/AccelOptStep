@@ -27,6 +27,16 @@ FRONTEND_CONFIG = {
     },
 }
 
+MIDDLEEND_CONFIG = {
+    "step": {
+        "prompts_subdir": "middleends/step",
+        "profiler": "step",
+        "speedup_metric": "cycles",
+        "needs_machine_config": True,
+        "code_preamble": "step",
+    },
+}
+
 BACKEND_CONFIG = {
     "step": {
         "bench_dir": "StepBench",
@@ -79,10 +89,12 @@ def resolve_pipeline(pipeline_or_benchmark_type: str) -> dict:
 
     be = BACKEND_CONFIG[backend]
 
-    return {
+    middleend = components["middleend"]
+
+    result = {
         "pipeline": pipeline_str,
         "frontend": frontend,
-        "middleend": components["middleend"],
+        "middleend": middleend,
         "backend": backend,
         # Backend-derived (bench, profiler, baselines all come from backend)
         "bench_dir": be["bench_dir"],
@@ -94,3 +106,43 @@ def resolve_pipeline(pipeline_or_benchmark_type: str) -> dict:
         "needs_machine_config": be["needs_machine_config"],
         "code_preamble": be["code_preamble"],
     }
+
+    # Add middleend-specific config when present
+    if middleend is not None:
+        assert middleend in MIDDLEEND_CONFIG, (
+            f"Unknown middleend '{middleend}'. "
+            f"Valid middleends: {list(MIDDLEEND_CONFIG.keys())}"
+        )
+        me = MIDDLEEND_CONFIG[middleend]
+        result["middleend_prompts_subdir"] = me["prompts_subdir"]
+        result["middleend_profiler"] = me["profiler"]
+        result["middleend_speedup_metric"] = me["speedup_metric"]
+        result["middleend_needs_machine_config"] = me["needs_machine_config"]
+        result["middleend_code_preamble"] = me["code_preamble"]
+
+    return result
+
+
+def get_stage_configs(pipeline_str: str) -> tuple[dict | None, dict]:
+    """For multi-stage pipelines, return (middleend_stage_config, backend_stage_config).
+
+    For single-stage pipelines, return (None, {}) — no overrides needed.
+
+    Each stage_config is a dict of overrides to apply on top of the resolved pipeline.
+    Stage 1 (middleend) overrides prompts/profiler to use the middleend.
+    Stage 2 (backend) uses the default resolved config (no overrides).
+    """
+    cfg = resolve_pipeline(pipeline_str)
+    if cfg["middleend"] is None:
+        return None, {}
+
+    me = MIDDLEEND_CONFIG[cfg["middleend"]]
+    stage1_overrides = {
+        "prompts_subdir": me["prompts_subdir"],
+        "profiler": me["profiler"],
+        "speedup_metric": me["speedup_metric"],
+        "needs_machine_config": me["needs_machine_config"],
+        "code_preamble": me["code_preamble"],
+    }
+    # Stage 2 uses the default backend config — no overrides
+    return stage1_overrides, {}

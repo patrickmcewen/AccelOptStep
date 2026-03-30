@@ -6,7 +6,7 @@ A STeP kernel is a Python function `build_graph()` that returns `(graph, output_
 - `graph` is a `networkx.MultiDiGraph`
 - `output_op` is the final `OffChipStore` operation
 
-**You only need to output `build_graph()`.** Imports, constants (M, K, N, SEED, etc.), and `compute_gold()` are provided externally. Your `build_graph()` can reference these module-level constants directly.
+**You only need to output `build_graph()`.** Imports and dimension constants (M, K, N, etc.) are provided externally as module-level variables. Your `build_graph()` must create its own input tensors using `torch.randn()` with these constants, then build the graph from those tensors.
 
 ## Required Imports
 ```python

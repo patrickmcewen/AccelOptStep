@@ -1,5 +1,5 @@
-An agent has analyzed the baseline STeP IR kernel with a list of optimization plans.
-Please concretize the optimization plan and optimize the `build_graph` function.
+An agent has analyzed the problem with a list of optimization plans for converting it to a STeP IR kernel.
+Please concretize the optimization plan and write a `build_graph` function in STeP IR.
 Only use existing STeP operators and functions. Do not invent new operators even if the optimization plan suggests it.
 Don't use lower precision than the baseline kernel even if the optimization plan suggests it.
 
@@ -8,7 +8,7 @@ Don't use lower precision than the baseline kernel even if the optimization plan
 {problem_code}
 ```
 
-# Baseline STeP IR kernel
+# Baseline kernel (reference implementation — may be in a different format like NKI)
 ```
 {kernel_code}
 ```
@@ -31,5 +31,14 @@ graph, output_op = build_graph()
 {optimization_plan}
 ```
 
-Output ONLY the optimized `build_graph` function wrapped in a code block.
-Do NOT include imports, constants (M, K, N, SEED, etc.), or `compute_gold()` — these are provided externally.
+Output ONLY the `build_graph` function wrapped in a code block.
+Do NOT include imports — they are provided externally.
+Dimension constants (M, K, N, etc.) are available as module-level variables.
+You MUST create input tensors inside `build_graph()` using `torch.randn()` with the dimension constants, e.g.:
+```python
+def build_graph():
+    graph = MultiDiGraph()
+    A = torch.randn(M, K, dtype=torch.float32)
+    B = torch.randn(K, N, dtype=torch.float32)
+    # ... OffChipLoad(underlying=A, ...) etc.
+```

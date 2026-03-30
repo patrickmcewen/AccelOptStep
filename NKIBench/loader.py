@@ -1,6 +1,8 @@
 """Thin loader for NKIBench/bench_config.yaml — single entry point for NKI benchmark config."""
 
+import importlib
 from pathlib import Path
+
 import yaml
 
 BENCH_CONFIG_PATH = Path(__file__).parent / "bench_config.yaml"
@@ -28,3 +30,13 @@ def list_benchmarks():
     """Return list of all benchmark names."""
     config = load_config()
     return list(config.keys())
+
+
+def load_baseline(bench_name):
+    """Import and return the baseline module, or None if no baseline exists."""
+    config = load_config()
+    baseline_path = config[bench_name].get("baseline")
+    if not baseline_path:
+        return None
+    module_name = baseline_path.replace("/", ".").removesuffix(".py")
+    return importlib.import_module(f"NKIBench.{module_name}")

@@ -94,7 +94,8 @@ def construct_executor_prompt(config: ExecutorPromptConfig) -> str:
     )
     return user_prompt
 
-def _write_temp_kernel(code: str, baseline_code: str, code_preamble: str = "step") -> str:
+def _write_temp_kernel(code: str, baseline_code: str, code_preamble: str = "step",
+                       values_json: str | None = None) -> str:
     fd, temp_path = tempfile.mkstemp(suffix=".py")
     with os.fdopen(fd, "w") as f:
         if code_preamble == "nki":
@@ -105,6 +106,15 @@ def _write_temp_kernel(code: str, baseline_code: str, code_preamble: str = "step
         else:
             f.write(STEP_IMPORTS)
             f.write("\n")
+            # Inject dimension constants (M, K, N, etc.) so the LLM-generated
+            # build_graph() can reference them as module-level variables.
+            # This is needed when the baseline is not a STeP kernel (e.g.,
+            # NKI baseline in a multi-stage pipeline) and lacks these constants.
+            if values_json:
+                dims = json.loads(values_json)
+                for k, v in dims.items():
+                    f.write(f"{k} = {v!r}\n")
+                f.write("\n")
             f.write(baseline_code)
             f.write("\n")
             f.write(code)
@@ -272,7 +282,8 @@ def stage2_profile_and_collect(
         try:
             start = time.monotonic()
             print(f"[Stage2] START name={name} case={base_spec['case_name']} timeout={per_profile_timeout}s")
-            temp_path = _write_temp_kernel(code, base_spec["baseline_code"], code_preamble=code_preamble)
+            temp_path = _write_temp_kernel(code, base_spec["baseline_code"], code_preamble=code_preamble,
+                                          values_json=base_spec.get("values"))
             if profiler == "nki":
                 kp = nki_profile_with_hard_timeout_sync(
                     program_path=temp_path,
@@ -401,6 +412,8 @@ async def main(args):
     # load inputs and substitute machine config placeholders
     from pipeline_registry import resolve_pipeline
     pipeline = resolve_pipeline(args.pipeline)
+    if args.stage_config:
+        pipeline = {**pipeline, **json.loads(args.stage_config)}
 
     if pipeline["needs_machine_config"]:
         from accelopt.step_kernel_wrapper import load_machine_config, apply_prompt_substitutions
@@ -565,6 +578,7 @@ if __name__ == "__main__":
     parser.add_argument("--machine_config_preset", type=str, default="default", help="Preset name in machine_config.yaml")
     parser.add_argument("--pipeline", type=str, default="pytorch-step")
     parser.add_argument("--rel_tol", type=float, default=2e-5, help="Relative tolerance for NKI correctness checks")
+    parser.add_argument("--stage_config", type=str, default=None, help="JSON dict of pipeline overrides for multi-stage execution")
     parser.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
     args = parser.parse_args()
 

@@ -1,6 +1,7 @@
 """Run rewrites selection, candidate selection, and profiling."""
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -28,9 +29,12 @@ def run(
     machine_config_path: str | None = None,
     machine_config_preset: str = "default",
     pipeline: str = "pytorch-step",
+    stage_config: dict | None = None,
 ) -> None:
     from pipeline_registry import resolve_pipeline
     pipeline_cfg = resolve_pipeline(pipeline)
+    if stage_config:
+        pipeline_cfg = {**pipeline_cfg, **stage_config}
     base_dir = Path(os.environ["ACCELOPT_BASE_DIR"])
     prompts_base = base_dir / "prompts" / pipeline_cfg["prompts_subdir"]
     exp_dir = exp_base_dir / exp_date
@@ -89,18 +93,17 @@ def run(
 
     select_candidates_exec = base_dir / "scripts" / "select_candidates.py"
     output_base_path = exp_dir / "candidates"
-    subprocess.run(
-        [
-            sys.executable, str(select_candidates_exec),
-            "--executor_results_path", str(executor_results_path),
-            "--output_base_path", str(output_base_path),
-            "--topk", str(topk_candidates),
-            "--log_file", str(log_file),
-            "--pipeline", pipeline,
-        ],
-        cwd=str(exp_dir),
-        check=True,
-    )
+    select_cmd = [
+        sys.executable, str(select_candidates_exec),
+        "--executor_results_path", str(executor_results_path),
+        "--output_base_path", str(output_base_path),
+        "--topk", str(topk_candidates),
+        "--log_file", str(log_file),
+        "--pipeline", pipeline,
+    ]
+    if stage_config:
+        select_cmd += ["--stage_config", json.dumps(stage_config)]
+    subprocess.run(select_cmd, cwd=str(exp_dir), check=True)
 
     end_time = _timestamp()
     with open(exp_dir / "select_candidates_start_end_time.txt", "a") as f:
