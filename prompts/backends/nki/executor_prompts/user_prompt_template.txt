@@ -21,6 +21,7 @@ if __name__ == "__main__":
     kernel_output = transform_nki_outputs(kernel(*transform_to_nki_inputs(inputs)), ref_output)
     assert np.allclose(kernel_output, ref_output, atol=1e-4, rtol=1e-2)
 ```
+{middleend_context}
 
 # Optimization plan
 ```

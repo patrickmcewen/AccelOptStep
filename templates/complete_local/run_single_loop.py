@@ -247,18 +247,14 @@ def _setup_stage2_baseline(
     original_profile_csv: Path,
     pipeline_cfg: dict,
 ) -> None:
-    """Set up Stage 2's initial candidates directory with the Stage 1 best kernel as baseline.
+    """Set up Stage 2's initial candidates directory.
 
-    Copies the Stage 1 best kernel to the Stage 2 experiment dir and creates
-    a profile_results.csv with it as the baseline (profiled with the backend profiler).
+    Uses the original NKI baseline from profile_results.csv (already profiled
+    with the backend profiler). Adds the Stage 1 best kernel as a
+    middleend_kernel column for prompt context.
     """
     stage2_candidates_dir = exp_base_dir / stage2_exp_date / "candidates"
     stage2_candidates_dir.mkdir(parents=True, exist_ok=True)
-
-    # Read original profile CSV to get problem metadata (task paths, values, etc.)
-    original_df = pd.read_csv(original_profile_csv)
-    assert len(original_df) == 1, f"Expected single problem in profile CSV, got {len(original_df)}"
-    row = original_df.iloc[0].to_dict()
 
     # Copy stage1 best kernel to a stable location
     stage2_kernel_dir = exp_base_dir / stage2_exp_date / "stage1_best"
@@ -266,26 +262,10 @@ def _setup_stage2_baseline(
     dest_kernel = stage2_kernel_dir / stage1_best_kernel.name
     shutil.copy2(stage1_best_kernel, dest_kernel)
 
-    # Profile the stage1 kernel with the backend profiler
-    if pipeline_cfg["profiler"] == "nki":
-        from accelopt.nki_kernel_wrapper import NKIKernel
-        nki_kernel = NKIKernel(str(dest_kernel), row["task"])
-        nki_kernel.rel_tol = 2e-5
-        nki_kernel.profile([])
-        profile_data = json.dumps(nki_kernel.res.metadata)
-    else:
-        from accelopt.step_kernel_wrapper import StepKernel, ProfileMode
-        dims = json.loads(row["values"])
-        with open(str(dest_kernel)) as f:
-            code = f.read()
-        step_kernel = StepKernel(step_code=code, problem_path=row["task"],
-                                 profile_mode=ProfileMode.CYCLE_ACCURATE, dims=dims)
-        props = step_kernel.profile()
-        profile_data = json.dumps(props.metadata)
-
-    # Write profile CSV with stage1 kernel as baseline
-    new_row = {**row, "kernel": str(dest_kernel), "profile": profile_data}
-    pd.DataFrame([new_row]).to_csv(stage2_candidates_dir / "profile_results.csv", index=False)
+    # Use the original NKI baseline as-is, add middleend_kernel column
+    df = pd.read_csv(original_profile_csv)
+    df["middleend_kernel"] = str(dest_kernel)
+    df.to_csv(stage2_candidates_dir / "profile_results.csv", index=False)
 
 
 def _parse_log_entries(log_path: Path, exp_date_prefix: str) -> dict:
@@ -445,6 +425,9 @@ def _run_multi_stage_fresh(
         pipeline_cfg=pipeline_cfg,
     )
 
+    if stage2_init_date is None:
+        return
+
     # ---- Stage 2: Backend ----
     print(f"\n>>> STAGE 2: {pipeline_cfg['backend'].upper()} backend optimization")
     _run_stage(
@@ -464,10 +447,11 @@ def _setup_stage2_from_stage1(
     stage1_last_date: str,
     stage1_config: dict,
     pipeline_cfg: dict,
-) -> str:
+) -> str | None:
     """Extract Stage 1 best kernel and set up Stage 2 initial directory.
 
-    Returns the stage2_init_date string.
+    Returns the stage2_init_date string, or None if Stage 1 produced no valid
+    kernels (Stage 2 should be skipped).
     """
     stage1_best = _extract_best_kernel_path(
         exp_base_dir, stage1_last_date,
@@ -475,29 +459,29 @@ def _setup_stage2_from_stage1(
     )
 
     if stage1_best is None:
-        print(">>> STAGE 1 produced no valid kernels. Falling back to original baseline for Stage 2.")
+        msg = (
+            f"Stage 1 ({pipeline_cfg['middleend']} middleend) produced no valid kernels.\n"
+            f"Stage 2 ({pipeline_cfg['backend']} backend) skipped.\n"
+            f"Last Stage 1 exp_date: {stage1_last_date}\n"
+        )
+        marker = exp_base_dir / "STAGE2_SKIPPED.txt"
+        marker.write_text(msg)
+        print(f">>> STAGE 1 produced no valid kernels. Skipping Stage 2.")
+        print(f"    Wrote {marker}")
+        return None
 
     stage2_init_date = f"{exp_date_prefix}-s2-{datetime.now(LA).strftime('%m-%d-%H-%M')}"
     (exp_base_dir / stage2_init_date).mkdir(parents=True, exist_ok=True)
 
-    if stage1_best is not None:
-        original_profile_csv = exp_base_dir / init_exp_date / "candidates" / "profile_results.csv"
-        _setup_stage2_baseline(
-            exp_base_dir=exp_base_dir,
-            stage1_best_kernel=stage1_best,
-            stage2_exp_date=stage2_init_date,
-            original_profile_csv=original_profile_csv,
-            pipeline_cfg=pipeline_cfg,
-        )
-        print(f"    Stage 2 baseline: {stage1_best}")
-    else:
-        original_candidates = exp_base_dir / init_exp_date / "candidates"
-        stage2_candidates = exp_base_dir / stage2_init_date / "candidates"
-        stage2_candidates.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(
-            original_candidates / "profile_results.csv",
-            stage2_candidates / "profile_results.csv",
-        )
+    original_profile_csv = exp_base_dir / init_exp_date / "candidates" / "profile_results.csv"
+    _setup_stage2_baseline(
+        exp_base_dir=exp_base_dir,
+        stage1_best_kernel=stage1_best,
+        stage2_exp_date=stage2_init_date,
+        original_profile_csv=original_profile_csv,
+        pipeline_cfg=pipeline_cfg,
+    )
+    print(f"    Stage 2 baseline: {stage1_best}")
 
     return stage2_init_date
 
@@ -575,6 +559,8 @@ def _run_resume(
             stage1_config=stage1_config,
             pipeline_cfg=pipeline_cfg,
         )
+        if stage2_init_date is None:
+            return
         print(f"\n>>> STAGE 2: {pipeline_cfg['backend'].upper()} backend optimization")
         _run_stage(
             init_exp_date=stage2_init_date,
@@ -599,6 +585,8 @@ def _run_resume(
             stage1_config=stage1_config,
             pipeline_cfg=pipeline_cfg,
         )
+        if stage2_init_date is None:
+            return
         print(f"\n>>> STAGE 2: {pipeline_cfg['backend'].upper()} backend optimization")
         _run_stage(
             init_exp_date=stage2_init_date,

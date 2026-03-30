@@ -113,6 +113,7 @@ sdpa:
   presets:
     small:  {batch: 1,  heads: 1,  seq: 64,  dim: 128}
     medium: {batch: 8,  heads: 8,  seq: 256, dim: 512}
+    default: {batch: 8, heads: 8, seq: 256, dim: 512}
     large:  {batch: 32, heads: 32, seq: 512, dim: 1024}
 
 minigpt_block:

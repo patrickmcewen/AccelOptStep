@@ -29,6 +29,7 @@ defaults:
   logfire_enabled: true   # set to false to skip logfire setup (useful for local/test runs)
   machine_config: default
   middleend_iters: null    # if set, Stage 1 (middleend) uses this many iters; Stage 2 uses 'iters'
+  per_profile_timeout: 3600
 
 # --- Presets ---
 
@@ -47,7 +48,7 @@ test_small_scale_run:
   benchmarks: [gemm, gemm_swish_scaling, sdpa]
   presets: [small]
 
-pytorch_nki_other_benchmarks:
+pytorch_step_other_benchmarks:
   project_name: pytorch-step
   iters: 3
   breadth: 2
@@ -57,8 +58,8 @@ pytorch_nki_other_benchmarks:
   exp_n: 2
   max_threshold: 1.01
   min_threshold: 1.01
-  benchmarks: [moe, gemm_swish_scaling, sdpa]
-  presets: [small] 
+  benchmarks: [moe, sdpa]
+  presets: [default] 
 
 sdpa_only:
   iters: 2
@@ -155,7 +156,7 @@ pytorch_step_nki_small:
 
 numpy_step_nki_small:
   pipeline: numpy-step-nki
-  iters: 2
+  iters: 3
   breadth: 2
   num_samples: 1
   topk_candidates: 2
@@ -163,5 +164,19 @@ numpy_step_nki_small:
   exp_n: 2
   max_threshold: 1.01
   min_threshold: 1.01
-  benchmarks: [matmul, silu, rmsnorm_matmul]
+  benchmarks: [matmul_add_rmsnorm, rope_single_freq_apply, gqa_full]
+  middleend_iters: 1
+  presets: [default]
+
+numpy_nki_small:
+  pipeline: numpy-nki
+  iters: 1
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+  benchmarks: [matmul_add_rmsnorm, rope_single_freq_apply, gqa_full]
   presets: [default]

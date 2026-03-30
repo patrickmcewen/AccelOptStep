@@ -64,6 +64,7 @@ class ExecutorPromptConfig(BaseModel):
     step_kernel_path: str = ""
     user_template_path: str = ""
     optimization_plan: str = ""
+    middleend_kernel_path: str = ""
 
 class ExecutorConfig(BaseModel):
     system_prompt: str = ""
@@ -77,6 +78,7 @@ class ExecutorConfig(BaseModel):
     num_samples: int = 4
     user_template_path: str = ""
     profile_mode: str = "cycle_accurate"
+    middleend_kernel_path: str = ""
 
 # -------------------------- Helpers --------------------------
 def construct_executor_prompt(config: ExecutorPromptConfig) -> str:
@@ -86,11 +88,27 @@ def construct_executor_prompt(config: ExecutorPromptConfig) -> str:
         step_kernel_function = f.read()
     with open(config.user_template_path, "r") as f:
         prompt_template = f.read()
+    if config.middleend_kernel_path:
+        with open(config.middleend_kernel_path, "r") as f:
+            middleend_code = f.read()
+        middleend_block = (
+            "\n# Optimized STeP IR Reference\n"
+            "The following STeP IR kernel was produced by an earlier optimization stage. "
+            "Use it as a reference for optimization direction — it shows which data movement "
+            "and compute patterns were found to be efficient. Your output must still be a "
+            "valid NKI kernel.\n"
+            "```\n"
+            f"{middleend_code}\n"
+            "```"
+        )
+    else:
+        middleend_block = ""
     user_prompt = (
         prompt_template
         .replace("{problem_code}", host_problem_function)
         .replace("{kernel_code}", step_kernel_function)
         .replace("{optimization_plan}", config.optimization_plan)
+        .replace("{middleend_context}", middleend_block)
     )
     return user_prompt
 
@@ -383,12 +401,14 @@ async def process_single_service_plan(
     speedup_metric: str = "cycles",
     code_preamble: str = "step",
     rel_tol: float = 2e-5,
+    per_profile_timeout: int = 600,
 ):
     pconfig = ExecutorPromptConfig(
         host_problem_path=case_config.task_path,
         step_kernel_path=case_config.kernel_path,
         user_template_path=case_config.user_template_path,
         optimization_plan=case_config.optimization_plan,
+        middleend_kernel_path=case_config.middleend_kernel_path,
     )
     agent = Agent(name="Executor", instructions=case_config.system_prompt, model=model)
 
@@ -396,7 +416,7 @@ async def process_single_service_plan(
     proposals = await stage1_gather_proposals(case_config.service_name, pconfig, agent, case_config.num_samples)
 
     # 2) Sequential profiling with result collection
-    results = stage2_profile_and_collect(proposals, baseline_props, case_config, base_spec, per_profile_timeout=180,
+    results = stage2_profile_and_collect(proposals, baseline_props, case_config, base_spec, per_profile_timeout=per_profile_timeout,
                                         machine_config_path=machine_config_path, machine_config_preset=machine_config_preset,
                                         profiler=profiler, speedup_metric=speedup_metric,
                                         code_preamble=code_preamble, rel_tol=rel_tol)
@@ -430,6 +450,13 @@ async def main(args):
             system_prompt += "\n\n" + f.read()
     if mc is not None:
         system_prompt = apply_prompt_substitutions(system_prompt, mc)
+    # Save the fully assembled executor prompts for reproducibility
+    executor_prompts_dir = Path(args.exp_dir) / "executor_prompts"
+    executor_prompts_dir.mkdir(parents=True, exist_ok=True)
+    (executor_prompts_dir / "system_prompt.txt").write_text(system_prompt)
+    with open(args.user_template_path, "r") as f:
+        (executor_prompts_dir / "user_prompt_template.txt").write_text(f.read())
+
     with open(args.problems_path, "r") as f:
         problems = pd.read_csv(f)
     with open(args.extractor_output_path, "r") as f:
@@ -466,6 +493,10 @@ async def main(args):
         with open(row["kernel"], "r") as f:
             baseline_code = f.read()
 
+        middleend_kernel_path = row.get("middleend_kernel", "")
+        if pd.isna(middleend_kernel_path):
+            middleend_kernel_path = ""
+
         base_spec = {
             "problem": row["problem"],
             "values": row["values"],
@@ -491,6 +522,7 @@ async def main(args):
                 num_samples=args.num_samples,
                 user_template_path=args.user_template_path,
                 profile_mode=args.profile_mode,
+                middleend_kernel_path=middleend_kernel_path,
             )
 
             plan_results = await asyncio.wait_for(
@@ -500,7 +532,8 @@ async def main(args):
                                            profiler=pipeline["profiler"],
                                            speedup_metric=pipeline["speedup_metric"],
                                            code_preamble=pipeline["code_preamble"],
-                                           rel_tol=args.rel_tol),
+                                           rel_tol=args.rel_tol,
+                                           per_profile_timeout=args.per_profile_timeout),
                 timeout=7200
             )
 
@@ -580,6 +613,7 @@ if __name__ == "__main__":
     parser.add_argument("--rel_tol", type=float, default=2e-5, help="Relative tolerance for NKI correctness checks")
     parser.add_argument("--stage_config", type=str, default=None, help="JSON dict of pipeline overrides for multi-stage execution")
     parser.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
+    parser.add_argument("--per_profile_timeout", type=int, default=600, help="Hard timeout in seconds for each profile compilation/run")
     args = parser.parse_args()
 
     if args.log_file:

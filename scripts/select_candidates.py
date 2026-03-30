@@ -64,6 +64,15 @@ if __name__ == "__main__":
     with open(args.executor_results_path, "r") as f:
         executor_results = json.load(f)
 
+    # Read middleend_kernel mapping from the input profile CSV (if the column exists)
+    input_profile_csv = os.path.join(os.path.dirname(args.executor_results_path), "profile_results.csv")
+    middleend_kernel_map = {}
+    if os.path.exists(input_profile_csv):
+        input_df = pd.read_csv(input_profile_csv)
+        if "middleend_kernel" in input_df.columns:
+            for _, r in input_df.iterrows():
+                middleend_kernel_map[r["case_name"]] = r["middleend_kernel"]
+
     metric_key = pipeline["speedup_metric"]
 
     candidates = {}
@@ -132,7 +141,7 @@ if __name__ == "__main__":
                 f.write(body_code)
             with open(numpy_path, "w") as f:
                 f.write(item["spec_code"])
-            output_dict.append({
+            entry = {
                 "service_name": new_service_name,
                 "task": numpy_path,
                 "kernel": body_path,
@@ -141,7 +150,10 @@ if __name__ == "__main__":
                 "plan_id": item["plan_id"],
                 "case_name": case_name,
                 "profile": item["profile"],
-            })
+            }
+            if case_name in middleend_kernel_map:
+                entry["middleend_kernel"] = middleend_kernel_map[case_name]
+            output_dict.append(entry)
     output_path = f"{output_base_path}/candidates.csv"
     output_df = pd.DataFrame(output_dict)
     output_df.to_csv(output_path, index=False)

@@ -16,6 +16,7 @@ class UserPromptConfig(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
     problem_code: str = ""
     kernel_code: str = ""
+    middleend_code: str = ""
     profile_str: str = ""
     prompt_template_path: str = ""
     displayed_profiles_path: str = ""
@@ -33,6 +34,20 @@ def construct_user_prompt(user_prompt_config: UserPromptConfig):
     user_prompt = prompt_template.replace("{problem_code}", user_prompt_config.problem_code)
     user_prompt = user_prompt.replace("{kernel_code}", user_prompt_config.kernel_code)
     user_prompt = user_prompt.replace("{profile}", user_prompt_config.profile_str)
+    if user_prompt_config.middleend_code:
+        middleend_block = (
+            "\n# Optimized STeP IR Reference\n"
+            "The following STeP IR kernel was produced by an earlier optimization stage. "
+            "Use it as a reference for optimization direction — it shows which data movement "
+            "and compute patterns were found to be efficient. Your output must still be a "
+            "valid NKI kernel.\n"
+            "```\n"
+            f"{user_prompt_config.middleend_code}\n"
+            "```"
+        )
+    else:
+        middleend_block = ""
+    user_prompt = user_prompt.replace("{middleend_context}", middleend_block)
     if user_prompt_config.machine_config:
         from accelopt.step_kernel_wrapper import apply_prompt_substitutions
         user_prompt = apply_prompt_substitutions(user_prompt, user_prompt_config.machine_config)
@@ -63,6 +78,9 @@ async def single_query(single_record, agent, user_prompt_config: UserPromptConfi
     config_copy.profile_str = profile_str
     config_copy.problem_code = open(single_record["task"], "r").read()
     config_copy.kernel_code = open(single_record["kernel"], "r").read()
+    middleend_kernel_path = single_record.get("middleend_kernel")
+    if middleend_kernel_path and pd.notna(middleend_kernel_path):
+        config_copy.middleend_code = open(middleend_kernel_path, "r").read()
     user_prompt = construct_user_prompt(config_copy)
     logfire.configure(service_name=single_record["service_name"])
     logfire.instrument_openai()

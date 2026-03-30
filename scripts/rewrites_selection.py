@@ -125,6 +125,16 @@ async def main(args):
     with open(args.base_prompt_path, "r") as f:
         summarizer_system_prompt = f.read()
 
+    # Save the summarizer prompts for reproducibility
+    exp_dir = os.path.dirname(os.path.dirname(args.output_list_path))  # output is in exp_dir/rewrites/
+    summarizer_prompts_dir = os.path.join(exp_dir, "summarizer_prompts")
+    os.makedirs(summarizer_prompts_dir, exist_ok=True)
+    with open(os.path.join(summarizer_prompts_dir, "system_prompt.txt"), "w") as f:
+        f.write(summarizer_system_prompt)
+    with open(args.user_template_path, "r") as uf:
+        with open(os.path.join(summarizer_prompts_dir, "user_prompt_template.txt"), "w") as f:
+            f.write(uf.read())
+
     summarizer_agent = Agent(
         name="Summarizer",
         instructions=summarizer_system_prompt,
