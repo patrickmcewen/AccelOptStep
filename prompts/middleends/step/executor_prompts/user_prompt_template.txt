@@ -31,6 +31,18 @@ graph, output_op = build_graph()
 {optimization_plan}
 ```
 
+Before each operator call, emit a comment of the form:
+# [op_name] in: (shape, dtype) → out: (shape, dtype)
+# e.g. # [Bufferize] in: (1, 4, 8, 16), Tile(64,128) → out: (1, 4), Buffer(Tile(64,128), shape=(8,16))
+
+Before the final `return (graph, output_op)`, emit this checklist as a comment block:
+# CHECKLIST:
+# [ ] BinaryMapAccum inputs: in1.shape == in2.shape? (verify)
+# [ ] compute_bw total: sum = ? (must be ≤ 4096)
+# [ ] All intermediate ops: write_back_mu=False?
+# [ ] infer_broadcast(graph) called?
+# [ ] on_chip_bytes estimate within 32 MB?
+
 Output ONLY the `build_graph` function wrapped in a code block.
 Do NOT include imports — they are provided externally.
 Dimension constants (M, K, N, etc.) are available as module-level variables.
