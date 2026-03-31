@@ -27,15 +27,17 @@ if args.stage_config:
     pipeline = {**pipeline, **json.loads(args.stage_config)}
 if args.bench_dir:
     pipeline["bench_dir"] = args.bench_dir
-    # Override problem_key to match the target bench suite's naming convention.
-    # baseline_key stays as-is: it's determined by the profiler (step→"baseline", nki→"kernel"),
-    # and both NKIBench and StepBench use "baseline" for STeP baselines.
-    _BENCH_DIR_PROBLEM_KEY = {
-        "NKIBench": "task",
-        "StepBench": "problem",
+    # Override problem_key and baseline_key to match the target bench suite's naming convention.
+    _BENCH_DIR_KEYS = {
+        "NKIBench": {"problem_key": "task", "baseline_key": "kernel"},
+        "StepBench": {"problem_key": "problem", "baseline_key": "baseline"},
     }
-    assert args.bench_dir in _BENCH_DIR_PROBLEM_KEY, f"Unknown bench_dir: {args.bench_dir}"
-    pipeline["problem_key"] = _BENCH_DIR_PROBLEM_KEY[args.bench_dir]
+    assert args.bench_dir in _BENCH_DIR_KEYS, f"Unknown bench_dir: {args.bench_dir}"
+    for key, val in _BENCH_DIR_KEYS[args.bench_dir].items():
+        pipeline[key] = val
+    # When profiling NKI on StepBench, use nki_baseline (not the STeP baseline)
+    if args.bench_dir == "StepBench" and pipeline["profiler"] == "nki":
+        pipeline["baseline_key"] = "nki_baseline"
 
 
 def construct_table():
@@ -62,6 +64,14 @@ def construct_table():
 
         task_path = bench_info[task_key]
 
+        # STeP baseline path (always under "baseline" key) — may differ from kernel_path
+        # when the active profiler uses a different baseline (e.g., nki_baseline on StepBench).
+        step_baseline_path = bench_info.get("baseline", "")
+        if step_baseline_path and step_baseline_path != kernel_path:
+            step_baseline_path = os.path.join(bench_dir, step_baseline_path)
+        else:
+            step_baseline_path = ""
+
         for preset_name, preset_dims in bench_info["presets"].items():
             if requested_presets is not None and preset_name not in requested_presets:
                 continue
@@ -72,6 +82,7 @@ def construct_table():
                 "values": json.dumps(preset_dims),
                 "task": os.path.join(bench_dir, task_path),
                 "kernel": os.path.join(bench_dir, kernel_path),
+                "step_baseline": step_baseline_path,
                 "case_name": case_name,
                 "service_name": case_name + "_ID0",
             }
@@ -87,11 +98,15 @@ def construct_profile_table():
 
     if pipeline["profiler"] == "nki":
         from src.nki_kernel_wrapper import NKIKernel
+        is_stepbench = pipeline.get("bench_dir") == "StepBench"
         for index, row in df.iterrows():
             dims = json.loads(row["values"])
             nki_kernel = NKIKernel(row["kernel"], row["task"])
             nki_kernel.rel_tol = 3e-5 if "mamba" in row["problem"] else 2e-5
-            nki_kernel.profile([])
+            if is_stepbench:
+                nki_kernel.profile_stepbench(dims, [])
+            else:
+                nki_kernel.profile([])
             props = nki_kernel.res
             profile_data = {"profile": json.dumps(props.metadata)}
             output_rows.append({**row, **profile_data})

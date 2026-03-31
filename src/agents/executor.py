@@ -66,6 +66,7 @@ class ExecutorPromptConfig(BaseModel):
     user_template_path: str = ""
     optimization_plan: str = ""
     middleend_kernel_path: str = ""
+    step_baseline_path: str = ""
 
 class ExecutorConfig(BaseModel):
     system_prompt: str = ""
@@ -80,6 +81,7 @@ class ExecutorConfig(BaseModel):
     user_template_path: str = ""
     profile_mode: str = "cycle_accurate"
     middleend_kernel_path: str = ""
+    step_baseline_path: str = ""
 
 # -------------------------- Helpers --------------------------
 def construct_executor_prompt(config: ExecutorPromptConfig) -> str:
@@ -104,12 +106,18 @@ def construct_executor_prompt(config: ExecutorPromptConfig) -> str:
         )
     else:
         middleend_block = ""
+    if config.step_baseline_path:
+        with open(config.step_baseline_path, "r") as f:
+            step_baseline_code = f.read()
+    else:
+        step_baseline_code = ""
     user_prompt = (
         prompt_template
         .replace("{problem_code}", host_problem_function)
         .replace("{kernel_code}", step_kernel_function)
         .replace("{optimization_plan}", config.optimization_plan)
         .replace("{middleend_context}", middleend_block)
+        .replace("{step_baseline_code}", step_baseline_code)
     )
     return user_prompt
 
@@ -421,6 +429,7 @@ async def process_single_service_plan(
         user_template_path=case_config.user_template_path,
         optimization_plan=case_config.optimization_plan,
         middleend_kernel_path=case_config.middleend_kernel_path,
+        step_baseline_path=case_config.step_baseline_path,
     )
     if prompts_dir is not None:
         user_prompt = construct_executor_prompt(pconfig)
@@ -512,6 +521,10 @@ async def main(args):
         if pd.isna(middleend_kernel_path):
             middleend_kernel_path = ""
 
+        step_baseline_path = row.get("step_baseline", "")
+        if pd.isna(step_baseline_path):
+            step_baseline_path = ""
+
         base_spec = {
             "problem": row["problem"],
             "values": row["values"],
@@ -538,6 +551,7 @@ async def main(args):
                 user_template_path=args.user_template_path,
                 profile_mode=args.profile_mode,
                 middleend_kernel_path=middleend_kernel_path,
+                step_baseline_path=step_baseline_path,
             )
 
             plan_results = await asyncio.wait_for(

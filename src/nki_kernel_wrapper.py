@@ -2,6 +2,7 @@ import json, uuid, time, tempfile
 import os
 import traceback
 import numpy as np
+import torch
 from .eval_numpy import load_module_from_path, check_precision_and_correctness, KernelProperties
 
 # Lazy import: neuronxcc.nki is only available on Trainium instances, not inside the STeP Docker container.
@@ -140,6 +141,118 @@ class NKIKernel:
                     rel_diff_list.append(rel_diff)
                     runtime_stats_list.append(runtime_stats)
                     if len(rel_diff_list) > 2: # Just retry twice. In paper, we did 10 times.
+                        break
+                runtime_stats = runtime_stats_list[np.argmin(rel_diff_list)]
+                self.res.metadata["latency"] = runtime_stats["mean_ms"]
+                self.res.metadata["min_ms"] = runtime_stats["min_ms"]
+                self.res.metadata["max_ms"] = runtime_stats["max_ms"]
+                self.res.metadata["rel_diffs"] = runtime_stats["rel_diffs"]
+
+                summary_profile_path = os.path.join(artifact_dir, f"{new_profile_name}_summary_profile.json")
+                summary_profile_cmd = f"neuron-profile view --output-format summary-json -n {neff_path} -s {ntff_path} > {summary_profile_path}"
+                os.system(summary_profile_cmd)
+                summary = json.load(open(summary_profile_path, 'r'))
+                profile_result = summary[next(iter(summary))]
+                for field in save_fields:
+                    if field in profile_result.keys():
+                        self.res.metadata[field] = profile_result[field]
+            except Exception as e:
+                print(f"Benchmarking failure. Error: {e}")
+                self.res.metadata["benchmarking_error"] = traceback.format_exc()
+                return self.res
+            return self.res
+
+    def profile_stepbench(self, dims: dict, save_fields: list[str] = []):
+        """Profile a StepBench NKI baseline.
+
+        StepBench NKI baselines use a different interface than NKIBench:
+          - program_path (nki_baseline): has nki_kernel / get_nki_kernel(dims), get_nki_inputs(dims)
+          - base_numpy_path (problem): has compute_gold(dims) returning a torch.Tensor
+        """
+        _ensure_nki()
+        os.environ["NEURON_CC_FLAGS"] = "--auto-cast=none"
+        os.environ['NEURON_RT_NUM_CORES'] = '1'
+        self.res = KernelProperties()
+
+        nki_baseline = load_module_from_path(self.program_path)
+        problem_module = load_module_from_path(self.base_numpy_path)
+
+        # For baselines that use run_nki (numpy-only, no hardware kernel), skip profiling
+        has_jit_kernel = hasattr(nki_baseline, 'nki_kernel') or hasattr(nki_baseline, 'get_nki_kernel')
+        if not has_jit_kernel:
+            assert hasattr(nki_baseline, 'run_nki'), f"No nki_kernel or run_nki found in {self.program_path}"
+            self.res.compiled = True
+            self.res.runnable = True
+            self.res.correct = True
+            self.res.metadata["note"] = "numpy-only baseline, no NKI kernel to profile"
+            return self.res
+
+        # Resolve kernel function
+        if hasattr(nki_baseline, 'get_nki_kernel'):
+            nki_kernel_fn = nki_baseline.get_nki_kernel(dims)
+        else:
+            nki_kernel_fn = nki_baseline.nki_kernel
+
+        nki_inputs = nki_baseline.get_nki_inputs(dims)
+        new_profile_name = f"nki_{uuid.uuid4()}"
+
+        with tempfile.TemporaryDirectory(dir="/tmp", prefix=f"{new_profile_name}_") as artifact_dir:
+            neff_path = os.path.join(artifact_dir, "kernel_file.neff")
+            ntff_path = os.path.join(artifact_dir, "kernel_profile.ntff")
+
+            # Compile and run
+            try:
+                output_nki_raw = nki.baremetal(
+                    nki_kernel_fn,
+                    save_neff_name=neff_path,
+                    save_trace_name=ntff_path,
+                    additional_compile_opt="--disable-dge --logical-nc-config=1"
+                )(*nki_inputs)
+                self.res.compiled = True
+                self.res.runnable = True
+            except Exception as e:
+                print(f"Compilation failure. Error: {e}")
+                self.res.metadata["compilation_error"] = str(e)
+                self.res.metadata["compilation_traceback"] = traceback.format_exc()
+                return self.res
+
+            # Correctness check
+            try:
+                gold = problem_module.compute_gold(dims)
+                if isinstance(gold, torch.Tensor):
+                    gold_np = gold.detach().float().numpy()
+                else:
+                    gold_np = np.array(gold, dtype=np.float32)
+
+                if isinstance(output_nki_raw, tuple):
+                    output_nki_raw = output_nki_raw[0]
+                output_np = np.array(output_nki_raw, dtype=np.float32)
+
+                output_nki_list = [output_np.reshape(gold_np.shape)]
+                output_task_tuple = (gold_np,)
+                check_precision_and_correctness(
+                    self.program_path, output_nki_list, output_task_tuple, self.res, self.rel_tol
+                )
+            except Exception as e:
+                print(f"Correctness checking failure. Error: {e}")
+                self.res.metadata["correctness_error"] = str(e)
+                return self.res
+
+            if not self.res.correct:
+                return self.res
+
+            # Benchmark latency
+            try:
+                runtime_stats = benchmark_latency(2, 10, nki_kernel_fn, nki_inputs, artifact_dir)
+                rel_diff = runtime_stats["rel_diffs"]
+                rel_diff_list = [rel_diff]
+                runtime_stats_list = [runtime_stats]
+                while rel_diff > self.perf_tol:
+                    print(f"Retry: {self.program_path} at {len(rel_diff_list)}; rel_diffs: {rel_diff_list}")
+                    time.sleep(1)
+                    rel_diff_list.append(rel_diff)
+                    runtime_stats_list.append(runtime_stats)
+                    if len(rel_diff_list) > 2:
                         break
                 runtime_stats = runtime_stats_list[np.argmin(rel_diff_list)]
                 self.res.metadata["latency"] = runtime_stats["mean_ms"]

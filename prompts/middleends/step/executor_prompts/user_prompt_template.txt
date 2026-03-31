@@ -8,7 +8,12 @@ Don't use lower precision than the baseline kernel even if the optimization plan
 {problem_code}
 ```
 
-# Baseline kernel (reference implementation — may be in a different format like NKI)
+# STeP IR Baseline kernel
+```
+{step_baseline_code}
+```
+
+# Backend baseline kernel (reference implementation in target backend format)
 ```
 {kernel_code}
 ```

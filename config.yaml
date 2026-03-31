@@ -233,3 +233,31 @@ numpy_step_matmul_add_rmsnorm:
   min_threshold: 1.01
   benchmarks: [matmul_add_rmsnorm]
   presets: [default]
+
+pytorch_step_nki_all_small:
+  pipeline: pytorch-step-nki
+  bench_dir: StepBench
+  benchmarks: all
+  presets: [small]
+  iters: 3
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+
+pytorch_nki_all_small:
+  pipeline: pytorch-nki
+  bench_dir: StepBench
+  benchmarks: all
+  presets: [small]
+  iters: 3
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
