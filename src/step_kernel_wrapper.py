@@ -218,14 +218,26 @@ class StepKernel:
         pb_path = os.path.join(tmpdir, "graph.pb")
 
         os.chdir(tmpdir)
-        cycles, duration_ms, duration_s = simulate(
-            graph,
-            logging=False,
-            hbm_config=hbm,
-            sim_config=sim,
-            protobuf_file=pb_path,
-            db_name=None,
-        )
+        os.environ["RUST_BACKTRACE"] = "1"
+        # Redirect fd 2 to a pipe so we capture Rust panic messages / backtraces.
+        old_stderr_fd = os.dup(2)
+        stderr_pipe_r, stderr_pipe_w = os.pipe()
+        os.dup2(stderr_pipe_w, 2)
+        os.close(stderr_pipe_w)
+        try:
+            cycles, duration_ms, duration_s = simulate(
+                graph,
+                logging=False,
+                hbm_config=hbm,
+                sim_config=sim,
+                protobuf_file=pb_path,
+                db_name=None,
+            )
+        finally:
+            os.dup2(old_stderr_fd, 2)
+            os.close(old_stderr_fd)
+            rust_stderr = os.read(stderr_pipe_r, 1024 * 1024).decode(errors="replace")
+            os.close(stderr_pipe_r)
 
         # Correctness: compare simulator output to compute_gold()
         result = {
@@ -255,7 +267,12 @@ class StepKernel:
         if not os.path.exists(f"{store_name}.json") or not os.path.exists(f"{store_name}.npy"):
             os.chdir(orig_dir)
             result["correct"] = False
-            result["correctness_error"] = "Simulation did not produce output files (possible Rust panic or store failure)"
+            error_msg = "Simulation did not produce output files"
+            if rust_stderr.strip():
+                error_msg += f"\n{rust_stderr.strip()}"
+            else:
+                error_msg += " (possible Rust panic or store failure)"
+            result["correctness_error"] = error_msg
             return result
         sim_output = reconstruct_numpy(store_name, delete_npy=False)
         os.chdir(orig_dir)

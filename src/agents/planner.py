@@ -9,6 +9,7 @@ import json
 from typing import List
 import random
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ def seperate_reasoning(result: RunResult | None):
         reasoning = plan
     return reasoning, plan
 
-async def single_query(single_record, agent, user_prompt_config: UserPromptConfig):
+async def single_query(single_record, agent, user_prompt_config: UserPromptConfig, prompts_dir=None):
     config_copy = user_prompt_config.model_copy()
     with open(config_copy.displayed_profiles_path, "r") as f:
         displayed_profiles = json.load(f)
@@ -82,6 +83,9 @@ async def single_query(single_record, agent, user_prompt_config: UserPromptConfi
     if middleend_kernel_path and pd.notna(middleend_kernel_path):
         config_copy.middleend_code = open(middleend_kernel_path, "r").read()
     user_prompt = construct_user_prompt(config_copy)
+    if prompts_dir is not None:
+        service_name = single_record["service_name"]
+        (prompts_dir / f"user_prompt_{service_name}.txt").write_text(user_prompt)
     logfire.configure(service_name=single_record["service_name"])
     logfire.instrument_openai()
     if "claude" in agent.model.model.lower():
@@ -119,7 +123,8 @@ async def main(kwargs):
     agent = kwargs["agent"]
     user_prompt_config = kwargs["user_prompt_config"]
     record_data = kwargs["record_data"]
-    return await single_query(record_data, agent, user_prompt_config)
+    prompts_dir = kwargs.get("prompts_dir")
+    return await single_query(record_data, agent, user_prompt_config, prompts_dir=prompts_dir)
 
 if __name__ == "__main__":
     import argparse
@@ -192,9 +197,25 @@ if __name__ == "__main__":
         openai_client=client
     )
 
+    with open(base_prompt_path, "r") as f:
+        system_prompt = f.read()
+    operator_ref_path = os.path.join(os.path.dirname(base_prompt_path), "operator_reference.txt")
+    if os.path.exists(operator_ref_path):
+        with open(operator_ref_path, "r") as f:
+            system_prompt += "\n\n" + f.read()
+    if mc is not None:
+        from src.step_kernel_wrapper import apply_prompt_substitutions
+        system_prompt = apply_prompt_substitutions(system_prompt, mc)
+
+    # Save fully assembled planner prompts for debuggability
+    from pathlib import Path
+    planner_prompts_dir = Path(args.exp_dir) / "planner_prompts"
+    planner_prompts_dir.mkdir(parents=True, exist_ok=True)
+    (planner_prompts_dir / "system_prompt.txt").write_text(system_prompt)
+
     agent = Agent(
         name="Planner",
-        instructions=open(base_prompt_path, "r").read(),
+        instructions=system_prompt,
         model=model
     )
 
@@ -210,7 +231,8 @@ if __name__ == "__main__":
                 displayed_profiles_path=displayed_profiles_path,
                 machine_config=mc,
             ),
-            "record_data": row_data
+            "record_data": row_data,
+            "prompts_dir": planner_prompts_dir,
         }
         all_main_args.append(main_arg)
 

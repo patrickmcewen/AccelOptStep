@@ -351,6 +351,16 @@ def stage2_profile_and_collect(
                         record_result["speedup"] = bl / cl
                     else:
                         record_result["speedup"] = None
+                    # Percentage-of-peak analysis
+                    from src.theoretical_peak import calc_theoretical_peak
+                    peak = calc_theoretical_peak(base_spec["problem"], json.loads(base_spec["values"]))
+                    if peak:
+                        record_result["theoretical_peak_latency_ms"] = peak["theoretical_peak_latency"]
+                        record_result["bottleneck"] = peak["bound_key"]
+                        if cl:
+                            record_result["pct_of_peak"] = peak["theoretical_peak_latency"] / cl
+                        if bl:
+                            record_result["baseline_pct_of_peak"] = peak["theoretical_peak_latency"] / bl
                 else:
                     # Success case - add STeP metrics
                     record_result["off_chip_bytes"] = metadata.get("off_chip_bytes")
@@ -403,6 +413,7 @@ async def process_single_service_plan(
     code_preamble: str = "step",
     rel_tol: float = 2e-5,
     per_profile_timeout: int = 600,
+    prompts_dir: Path | None = None,
 ):
     pconfig = ExecutorPromptConfig(
         host_problem_path=case_config.task_path,
@@ -411,6 +422,9 @@ async def process_single_service_plan(
         optimization_plan=case_config.optimization_plan,
         middleend_kernel_path=case_config.middleend_kernel_path,
     )
+    if prompts_dir is not None:
+        user_prompt = construct_executor_prompt(pconfig)
+        (prompts_dir / f"user_prompt_{case_config.service_name}.txt").write_text(user_prompt)
     agent = Agent(name="Executor", instructions=case_config.system_prompt, model=model)
 
     # 1) LLM parallel proposal generation
@@ -534,7 +548,8 @@ async def main(args):
                                            speedup_metric=pipeline["speedup_metric"],
                                            code_preamble=pipeline["code_preamble"],
                                            rel_tol=args.rel_tol,
-                                           per_profile_timeout=args.per_profile_timeout),
+                                           per_profile_timeout=args.per_profile_timeout,
+                                           prompts_dir=executor_prompts_dir),
                 timeout=7200
             )
 

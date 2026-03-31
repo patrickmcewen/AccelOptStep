@@ -1,26 +1,25 @@
-"""MiniGPT transformer block baseline.
+"""MiniGPT transformer block — full STeP baseline.
 
-Precomputes the first half (LayerNorm1 + CausalSelfAttention + Residual)
-on the host, then expresses the second half in STeP:
+Expresses the complete transformer block in STeP IR:
+  LN1 → Per-Head QKV Projections → Causal Attention → Output Projection
+  → Residual → LN2 → FC1 → GELU → FC2 → Residual
 
-  x_ln2  = LayerNorm2(x2)
-  fc1    = x_ln2 @ W_fc^T + b_fc                # (B*T, 4C)
-  gelu   = GELU(fc1)                             # (B*T, 4C)
-  fc2    = gelu  @ W_proj^T + b_proj             # (B*T, C)
-  output = fc2 + x2                              # residual add
-
-The attention half is precomputed because multi-head reshape (B*T, C) <->
-(B*nh, T, hs) cannot be expressed as a simple stride pattern in STeP.
-
-GELU is composed from STeP primitives:
-  GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
-  tanh(z) = (exp(2z) - 1) / (exp(2z) + 1)
+Key techniques:
+  - Per-head computation avoids the multi-head transpose entirely.
+    Each head h gets its own W_q_h, W_k_h, W_v_h slices of shape (hs, C).
+  - Output projection decomposed as sum of per-head matmuls:
+    y = sum_h(attn_h @ W_proj_h^T) + bias
+  - Causal mask applied as additive -inf matrix before softmax.
+  - GELU composed from primitives:
+    GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+    tanh(z) = (exp(2z) - 1) / (exp(2z) + 1)
+  - tile_m = T (full sequence per tile) so all reshaping is dimensional,
+    not data-movement, and avoids retiling between attention and MLP.
 """
 import math
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from networkx import MultiDiGraph
 
 from step_py.functions import map_fn
@@ -70,7 +69,6 @@ def _build_layernorm(graph, x_stream, weight_1d, bias_1d,
     mean = BinaryMap(graph=graph, in1=sum_x, in2=c_load,
                      fn=map_fn.Div(), write_back_mu=False, compute_bw=bw_div)
 
-    # x_centered = x - mean
     neg_one = _load_const(tile_m, M_tiles, -1.0, par_dispatch)
     neg_mean = BinaryMap(graph=graph, in1=mean, in2=neg_one,
                          fn=map_fn.Mul(), write_back_mu=False, compute_bw=bw_mul)
@@ -88,12 +86,11 @@ def _build_layernorm(graph, x_stream, weight_1d, bias_1d,
     var = BinaryMap(graph=graph, in1=sum_sq, in2=c_load2,
                     fn=map_fn.Div(), write_back_mu=False, compute_bw=bw_div)
 
-    # s = var + eps
     eps_ld = _load_const(tile_m, M_tiles, eps, par_dispatch)
     s = BinaryMap(graph=graph, in1=var, in2=eps_ld,
                   fn=map_fn.Add(), write_back_mu=False, compute_bw=bw_add)
 
-    # rsqrt(s) via Pade initial estimate + Newton-Raphson refinement
+    # rsqrt(s) via Pade + Newton-Raphson
     s_bc = Broadcast(graph=graph, input=s, num_consumers=NR_ITERS + 2)
 
     neg1 = _load_const(tile_m, M_tiles, -1.0, par_dispatch)
@@ -115,11 +112,9 @@ def _build_layernorm(graph, x_stream, weight_1d, bias_1d,
         cn05 = _load_const(tile_m, M_tiles, -0.5, par_dispatch)
         y = _nr_rsqrt_iter(graph, y, (s_bc, i + 2), c15, cn05, bw_mul, bw_add)
 
-    # normalized = x_centered * rsqrt
     normalized = BinaryMap(graph=graph, in1=(xc_bc, 2), in2=y,
                            fn=map_fn.Mul(), write_back_mu=False, compute_bw=bw_mul)
 
-    # scale and shift: output = normalized * weight + bias
     w_2d = weight_1d.unsqueeze(0).expand(tile_m, C).contiguous()
     w_ld = OffChipLoad(underlying=w_2d, stride=(0, 0),
                        out_shape_tiled=(M_tiles, 1),
@@ -131,46 +126,35 @@ def _build_layernorm(graph, x_stream, weight_1d, bias_1d,
     b_ld = OffChipLoad(underlying=b_2d, stride=(0, 0),
                        out_shape_tiled=(M_tiles, 1),
                        tile_row=tile_m, tile_col=C, par_dispatch=par_dispatch)
-    result = BinaryMap(graph=graph, in1=scaled, in2=b_ld,
-                       fn=map_fn.Add(), write_back_mu=False, compute_bw=bw_add)
-
-    return result
+    return BinaryMap(graph=graph, in1=scaled, in2=b_ld,
+                     fn=map_fn.Add(), write_back_mu=False, compute_bw=bw_add)
 
 
 def _build_gelu(graph, x_stream, tile_m, M_tiles, par_dispatch,
                 bw_mul, bw_add, bw_div):
-    """GELU subgraph composed from STeP primitives.
-
-    GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
-    tanh(z) = (exp(2z) - 1) / (exp(2z) + 1)
-    """
+    """GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))."""
     sqrt_2_over_pi = math.sqrt(2.0 / math.pi)
 
-    # x used 5 times: (0,1) -> x^2, (2) -> x^3, (3) -> inner, (4) -> final
     x_bc = Broadcast(graph=graph, input=x_stream, num_consumers=5)
 
-    # x^2
     x_sq = BinaryMap(graph=graph, in1=(x_bc, 0), in2=(x_bc, 1),
                      fn=map_fn.Mul(), write_back_mu=False, compute_bw=bw_mul)
-    # x^3
     x_cube = BinaryMap(graph=graph, in1=x_sq, in2=(x_bc, 2),
                        fn=map_fn.Mul(), write_back_mu=False, compute_bw=bw_mul)
-    # 0.044715 * x^3
+
     c_coeff = _load_const(tile_m, M_tiles, 0.044715, par_dispatch)
     coeff_x3 = BinaryMap(graph=graph, in1=c_coeff, in2=x_cube,
                          fn=map_fn.Mul(), write_back_mu=False, compute_bw=bw_mul)
-    # inner = x + 0.044715 * x^3
     inner = BinaryMap(graph=graph, in1=(x_bc, 3), in2=coeff_x3,
                       fn=map_fn.Add(), write_back_mu=False, compute_bw=bw_add)
-    # z = sqrt(2/pi) * inner
+
     c_s2p = _load_const(tile_m, M_tiles, sqrt_2_over_pi, par_dispatch)
     z = BinaryMap(graph=graph, in1=c_s2p, in2=inner,
                   fn=map_fn.Mul(), write_back_mu=False, compute_bw=bw_mul)
-    # 2z
+
     c_2 = _load_const(tile_m, M_tiles, 2.0, par_dispatch)
     two_z = BinaryMap(graph=graph, in1=c_2, in2=z,
                       fn=map_fn.Mul(), write_back_mu=False, compute_bw=bw_mul)
-    # exp(2z)
     exp_2z = UnaryMap(graph=graph, input=two_z,
                       fn=map_fn.Exp(), write_back_mu=False, compute_bw=bw_mul)
 
@@ -185,33 +169,61 @@ def _build_gelu(graph, x_stream, tile_m, M_tiles, par_dispatch,
     tanh_z = BinaryMap(graph=graph, in1=num, in2=den,
                        fn=map_fn.Div(), write_back_mu=False, compute_bw=bw_div)
 
-    # 1 + tanh(z)
     c_1b = _load_const(tile_m, M_tiles, 1.0, par_dispatch)
     one_plus_tanh = BinaryMap(graph=graph, in1=c_1b, in2=tanh_z,
                               fn=map_fn.Add(), write_back_mu=False, compute_bw=bw_add)
-    # 0.5 * x
+
     c_05 = _load_const(tile_m, M_tiles, 0.5, par_dispatch)
     half_x = BinaryMap(graph=graph, in1=c_05, in2=(x_bc, 4),
                        fn=map_fn.Mul(), write_back_mu=False, compute_bw=bw_mul)
-    # result = 0.5 * x * (1 + tanh(z))
-    result = BinaryMap(graph=graph, in1=half_x, in2=one_plus_tanh,
-                       fn=map_fn.Mul(), write_back_mu=False, compute_bw=bw_mul)
+    return BinaryMap(graph=graph, in1=half_x, in2=one_plus_tanh,
+                     fn=map_fn.Mul(), write_back_mu=False, compute_bw=bw_mul)
 
-    return result
+
+def _tree_add(graph, streams, bw_add):
+    """Sum a list of streams via balanced binary tree of BinaryMap(Add)."""
+    assert len(streams) >= 1
+    while len(streams) > 1:
+        next_level = []
+        for i in range(0, len(streams), 2):
+            if i + 1 < len(streams):
+                s = BinaryMap(graph=graph, in1=streams[i], in2=streams[i + 1],
+                              fn=map_fn.Add(), write_back_mu=False, compute_bw=bw_add)
+                next_level.append(s)
+            else:
+                next_level.append(streams[i])
+        streams = next_level
+    return streams[0]
+
+
+def _linear(graph, x, weight, bias_1d, tile_m, M_tiles, par_dispatch, bw_matmul, bw_add):
+    """y = x @ W^T + b.  W shape (out, in), stored as nn.Linear convention."""
+    out_dim = weight.shape[0]
+    in_dim = weight.shape[1]
+    w_load = OffChipLoad(underlying=weight, stride=(0, 0),
+                         out_shape_tiled=(M_tiles, 1),
+                         tile_row=out_dim, tile_col=in_dim, par_dispatch=par_dispatch)
+    mm = BinaryMap(graph=graph, in1=x, in2=w_load,
+                   fn=map_fn.Matmul(weight_transposed=True),
+                   write_back_mu=False, compute_bw=bw_matmul)
+    b_load = OffChipLoad(underlying=bias_1d.unsqueeze(0).contiguous(), stride=(0, 0),
+                         out_shape_tiled=(M_tiles, 1),
+                         tile_row=1, tile_col=out_dim, par_dispatch=par_dispatch)
+    return BinaryMap(graph=graph, in1=mm, in2=b_load,
+                     fn=map_fn.Add(), write_back_mu=False, compute_bw=bw_add)
 
 
 def build_graph(dims):
     B = dims["batch_size"]
     T = dims["seq_len"]
     C = dims["n_embd"]
-    n_head = dims["n_head"]
+    nh = dims["n_head"]
     max_seqlen = dims["max_seqlen"]
+    hs = C // nh
     four_C = 4 * C
-    M = B * T
 
-    tile_m = min(64, M)
-    assert M % tile_m == 0
-    M_tiles = M // tile_m
+    tile_m = T       # full sequence per tile — avoids retiling between phases
+    M_tiles = B      # one tile per batch element
     par_dispatch = 4
 
     bw_mul = 128
@@ -232,119 +244,144 @@ def build_graph(dims):
 
     torch.manual_seed(SEED)
     x_3d = torch.randn(B, T, C, dtype=torch.float32)
+    x_2d = x_3d.reshape(B * T, C).contiguous()
 
-    # ===== First half on host: LN1 -> Attention -> Residual =====
-    with torch.no_grad():
-        x_ln1 = F.layer_norm(x_3d, (C,), ln_1.weight, ln_1.bias)
+    # Extract attention weights
+    W_attn = c_attn.weight.detach()       # (3C, C)
+    b_attn = c_attn.bias.detach()         # (3C,)
+    W_q, W_k, W_v = W_attn[:C], W_attn[C:2*C], W_attn[2*C:]
+    b_q, b_k, b_v = b_attn[:C], b_attn[C:2*C], b_attn[2*C:]
 
-        qkv = F.linear(x_ln1, c_attn.weight, c_attn.bias)
-        q, k, v = qkv.split(C, dim=2)
+    W_proj = c_proj_attn.weight.detach()  # (C, C)
+    b_proj_attn_1d = c_proj_attn.bias.detach()
+    W_proj_T = W_proj.T.contiguous()      # (C, C) = weight^T
 
-        hs = C // n_head
-        q = q.view(B, T, n_head, hs).transpose(1, 2)
-        k = k.view(B, T, n_head, hs).transpose(1, 2)
-        v = v.view(B, T, n_head, hs).transpose(1, 2)
+    # Causal mask: 0 on/below diagonal, -inf above
+    causal_mask = torch.zeros(T, T, dtype=torch.float32)
+    causal_mask.masked_fill_(
+        torch.triu(torch.ones(T, T), diagonal=1).bool(), float('-inf'))
 
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(hs))
-        causal = torch.tril(torch.ones(max_seqlen, max_seqlen))
-        att = att.masked_fill(causal[:T, :T].view(1, 1, T, T) == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
-
-        y_attn = (att @ v).transpose(1, 2).contiguous().view(B, T, C)
-        y_attn = F.linear(y_attn, c_proj_attn.weight, c_proj_attn.bias)
-
-        x2 = x_3d + y_attn
-
-    # ===== Second half in STeP: LN2 -> MLP(FC1 -> GELU -> FC2) -> Residual =====
-    x2_2d = x2.reshape(M, C).contiguous()
-
-    # --- Load x2, broadcast to (residual, LN2) ---
-    x2_load = OffChipLoad(
-        underlying=x2_2d,
-        stride=(1, 0),
+    # ===== Load x: stream (B, 1) of (T, C) =====
+    x_load = OffChipLoad(
+        underlying=x_2d, stride=(1, 0),
         out_shape_tiled=(M_tiles, 1),
-        tile_row=tile_m, tile_col=C,
-        par_dispatch=par_dispatch,
+        tile_row=tile_m, tile_col=C, par_dispatch=par_dispatch,
     )
-    x2_bc = Broadcast(graph=graph, input=x2_load, num_consumers=2)
 
-    # --- LayerNorm2 ---
+    # x -> (0: LN1, 1: residual_1)
+    x_bc = Broadcast(graph=graph, input=x_load, num_consumers=2)
+
+    # ===== LayerNorm 1 =====
+    x_ln = _build_layernorm(
+        graph, (x_bc, 0), ln_1.weight.detach(), ln_1.bias.detach(),
+        tile_m, M_tiles, C, par_dispatch, bw_mul, bw_add, bw_div,
+    )
+
+    # ===== Per-head causal self-attention =====
+    # Broadcast x_ln to nh heads
+    x_ln_bc = Broadcast(graph=graph, input=x_ln, num_consumers=nh)
+
+    head_projs = []
+    for h in range(nh):
+        # Broadcast to Q, K, V projections
+        h_bc = Broadcast(graph=graph, input=(x_ln_bc, h), num_consumers=3)
+
+        # --- Q, K, V projections: (T, C) @ (hs, C)^T -> (T, hs) + bias ---
+        Wqh = W_q[h*hs:(h+1)*hs, :].contiguous()
+        bqh = b_q[h*hs:(h+1)*hs]
+        q_h = _linear(graph, (h_bc, 0), Wqh, bqh,
+                       tile_m, M_tiles, par_dispatch, bw_matmul, bw_add)
+
+        Wkh = W_k[h*hs:(h+1)*hs, :].contiguous()
+        bkh = b_k[h*hs:(h+1)*hs]
+        k_h = _linear(graph, (h_bc, 1), Wkh, bkh,
+                       tile_m, M_tiles, par_dispatch, bw_matmul, bw_add)
+
+        Wvh = W_v[h*hs:(h+1)*hs, :].contiguous()
+        bvh = b_v[h*hs:(h+1)*hs]
+        v_h = _linear(graph, (h_bc, 2), Wvh, bvh,
+                       tile_m, M_tiles, par_dispatch, bw_matmul, bw_add)
+
+        # --- QK^T / sqrt(hs): (T, hs) @ (T, hs)^T -> (T, T) ---
+        qkt = BinaryMap(graph=graph, in1=q_h, in2=k_h,
+                        fn=map_fn.Matmul(weight_transposed=True),
+                        write_back_mu=False, compute_bw=bw_matmul)
+
+        scale_ld = _load_const(tile_m, M_tiles, 1.0 / math.sqrt(hs), par_dispatch)
+        scaled = BinaryMap(graph=graph, in1=qkt, in2=scale_ld,
+                           fn=map_fn.Mul(), write_back_mu=False, compute_bw=bw_mul)
+
+        # --- Causal mask (additive) ---
+        mask_ld = OffChipLoad(underlying=causal_mask, stride=(0, 0),
+                              out_shape_tiled=(M_tiles, 1),
+                              tile_row=T, tile_col=T, par_dispatch=par_dispatch)
+        masked = BinaryMap(graph=graph, in1=scaled, in2=mask_ld,
+                           fn=map_fn.Add(), write_back_mu=False, compute_bw=bw_add)
+
+        # --- Softmax (simplified, no max-subtract) ---
+        exp_att = UnaryMap(graph=graph, input=masked,
+                           fn=map_fn.Exp(), write_back_mu=False, compute_bw=bw_mul)
+        exp_bc = Broadcast(graph=graph, input=exp_att, num_consumers=2)
+        rowsum = UnaryMap(graph=graph, input=(exp_bc, 1),
+                          fn=map_fn.RowWiseSum(), write_back_mu=False, compute_bw=bw_div)
+        softmax_out = BinaryMap(graph=graph, in1=(exp_bc, 0), in2=rowsum,
+                                fn=map_fn.Div(), write_back_mu=False, compute_bw=bw_div)
+
+        # --- att @ V: (T, T) @ (T, hs) -> (T, hs) ---
+        attn_out = BinaryMap(graph=graph, in1=softmax_out, in2=v_h,
+                             fn=map_fn.Matmul(),
+                             write_back_mu=False, compute_bw=bw_matmul)
+
+        # --- Per-head output projection: (T, hs) @ (hs, C) -> (T, C) ---
+        Wph_T = W_proj_T[h*hs:(h+1)*hs, :].contiguous()  # (hs, C)
+        wp_ld = OffChipLoad(underlying=Wph_T, stride=(0, 0),
+                            out_shape_tiled=(M_tiles, 1),
+                            tile_row=hs, tile_col=C, par_dispatch=par_dispatch)
+        proj_h = BinaryMap(graph=graph, in1=attn_out, in2=wp_ld,
+                           fn=map_fn.Matmul(),
+                           write_back_mu=False, compute_bw=bw_matmul)
+        head_projs.append(proj_h)
+
+    # ===== Sum head projections + bias =====
+    attn_sum = _tree_add(graph, head_projs, bw_add)
+
+    bp_ld = OffChipLoad(underlying=b_proj_attn_1d.unsqueeze(0).contiguous(),
+                        stride=(0, 0), out_shape_tiled=(M_tiles, 1),
+                        tile_row=1, tile_col=C, par_dispatch=par_dispatch)
+    attn_biased = BinaryMap(graph=graph, in1=attn_sum, in2=bp_ld,
+                            fn=map_fn.Add(), write_back_mu=False, compute_bw=bw_add)
+
+    # ===== Residual 1: x2 = attn_out + x =====
+    x2 = BinaryMap(graph=graph, in1=attn_biased, in2=(x_bc, 1),
+                   fn=map_fn.Add(), write_back_mu=False, compute_bw=bw_add)
+
+    # x2 -> (0: LN2, 1: residual_2)
+    x2_bc = Broadcast(graph=graph, input=x2, num_consumers=2)
+
+    # ===== LayerNorm 2 =====
     x_ln2 = _build_layernorm(
         graph, (x2_bc, 0), ln_2.weight.detach(), ln_2.bias.detach(),
-        tile_m, M_tiles, C, par_dispatch,
-        bw_mul, bw_add, bw_div,
+        tile_m, M_tiles, C, par_dispatch, bw_mul, bw_add, bw_div,
     )
 
-    # --- FC1: (tile_m, C) @ (4C, C)^T -> (tile_m, 4C) ---
-    wfc_load = OffChipLoad(
-        underlying=c_fc.weight.detach().contiguous(),
-        stride=(0, 0),
-        out_shape_tiled=(M_tiles, 1),
-        tile_row=four_C, tile_col=C,
-        par_dispatch=par_dispatch,
-    )
-    fc1 = BinaryMap(
-        graph=graph, in1=x_ln2, in2=wfc_load,
-        fn=map_fn.Matmul(weight_transposed=True),
-        write_back_mu=False, compute_bw=bw_matmul,
-    )
+    # ===== MLP: FC1 -> GELU -> FC2 =====
+    fc1 = _linear(graph, x_ln2,
+                  c_fc.weight.detach().contiguous(), c_fc.bias.detach(),
+                  tile_m, M_tiles, par_dispatch, bw_matmul, bw_add)
 
-    # FC1 bias: (1, 4C) broadcasts to (tile_m, 4C)
-    bfc_load = OffChipLoad(
-        underlying=c_fc.bias.detach().unsqueeze(0).contiguous(),
-        stride=(0, 0),
-        out_shape_tiled=(M_tiles, 1),
-        tile_row=1, tile_col=four_C,
-        par_dispatch=par_dispatch,
-    )
-    fc1_biased = BinaryMap(
-        graph=graph, in1=fc1, in2=bfc_load,
-        fn=map_fn.Add(), write_back_mu=False, compute_bw=bw_add,
-    )
+    gelu_out = _build_gelu(graph, fc1, tile_m, M_tiles, par_dispatch,
+                           bw_mul, bw_add, bw_div)
 
-    # --- GELU ---
-    gelu_out = _build_gelu(
-        graph, fc1_biased, tile_m, M_tiles, par_dispatch,
-        bw_mul, bw_add, bw_div,
-    )
+    fc2 = _linear(graph, gelu_out,
+                  c_proj_mlp.weight.detach().contiguous(), c_proj_mlp.bias.detach(),
+                  tile_m, M_tiles, par_dispatch, bw_matmul, bw_add)
 
-    # --- FC2: (tile_m, 4C) @ (C, 4C)^T -> (tile_m, C) ---
-    wproj_load = OffChipLoad(
-        underlying=c_proj_mlp.weight.detach().contiguous(),
-        stride=(0, 0),
-        out_shape_tiled=(M_tiles, 1),
-        tile_row=C, tile_col=four_C,
-        par_dispatch=par_dispatch,
-    )
-    fc2 = BinaryMap(
-        graph=graph, in1=gelu_out, in2=wproj_load,
-        fn=map_fn.Matmul(weight_transposed=True),
-        write_back_mu=False, compute_bw=bw_matmul,
-    )
+    # ===== Residual 2: output = fc2 + x2 =====
+    output = BinaryMap(graph=graph, in1=fc2, in2=(x2_bc, 1),
+                       fn=map_fn.Add(), write_back_mu=True, compute_bw=bw_add)
 
-    # FC2 bias: (1, C) broadcasts to (tile_m, C)
-    bproj_load = OffChipLoad(
-        underlying=c_proj_mlp.bias.detach().unsqueeze(0).contiguous(),
-        stride=(0, 0),
-        out_shape_tiled=(M_tiles, 1),
-        tile_row=1, tile_col=C,
-        par_dispatch=par_dispatch,
-    )
-    fc2_biased = BinaryMap(
-        graph=graph, in1=fc2, in2=bproj_load,
-        fn=map_fn.Add(), write_back_mu=False, compute_bw=bw_add,
-    )
-
-    # --- Residual: output = fc2 + x2 ---
-    output = BinaryMap(
-        graph=graph, in1=fc2_biased, in2=(x2_bc, 1),
-        fn=map_fn.Add(), write_back_mu=True, compute_bw=bw_add,
-    )
-
-    output_op = OffChipStore(
-        graph=graph, input=output,
-        par_dispatch=par_dispatch, store_file_name="output",
-    )
+    output_op = OffChipStore(graph=graph, input=output,
+                             par_dispatch=par_dispatch, store_file_name="output")
 
     graph = infer_broadcast(graph)
     return graph, output_op
