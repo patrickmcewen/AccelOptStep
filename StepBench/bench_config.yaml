@@ -4,6 +4,7 @@
 gemm:
   problem: problems/gemm.py
   baseline: baselines/gemm.py
+  nki_baseline: nki_baselines/gemm.py
   params: [M, K, N]
   presets:
     small:       {M: 256,   K: 256,    N: 256}
@@ -15,6 +16,7 @@ gemm:
 gemm_batched:
   problem: problems/gemm_batched.py
   baseline: baselines/gemm_batched.py
+  nki_baseline: nki_baselines/gemm_batched.py
   params: [batch, M, K, N]
   presets:
     small:  {batch: 4,   M: 64,  K: 128,  N: 256}
@@ -23,6 +25,7 @@ gemm_batched:
 gemm_3d:
   problem: problems/gemm_3d.py
   baseline: baselines/gemm_3d.py
+  nki_baseline: nki_baselines/gemm_3d.py
   params: [N, M, K, L]
   presets:
     small:   {N: 2,  M: 64,   K: 128,  L: 64}
@@ -31,11 +34,14 @@ gemm_3d:
 activation:
   problem: problems/activation.py
   baseline: baselines/activation.py
+  nki_baseline: nki_baselines/activation.py
   params: [batch_size, dim, fn]
   presets:
     swish_small:   {batch_size: 256,  dim: 4096,   fn: swish}
     softmax_small: {batch_size: 128,  dim: 256,    fn: softmax}
     relu_small:    {batch_size: 256,  dim: 4096,   fn: relu}
+    gelu_small:    {batch_size: 256,  dim: 4096,   fn: gelu}
+    sigmoid_small: {batch_size: 256,  dim: 4096,   fn: sigmoid}
     relu_large:    {batch_size: 4096, dim: 393216,  fn: relu}
     gelu_large:    {batch_size: 4096, dim: 393216,  fn: gelu}
     sigmoid_large: {batch_size: 4096, dim: 393216,  fn: sigmoid}
@@ -45,6 +51,7 @@ activation:
 layernorm:
   problem: problems/layernorm.py
   baseline: baselines/layernorm.py
+  nki_baseline: nki_baselines/layernorm.py
   params: [batch_size, features, dim1, dim2]
   presets:
     small:   {batch_size: 2,  features: 8,  dim1: 32,  dim2: 32}
@@ -53,6 +60,7 @@ layernorm:
 rmsnorm:
   problem: problems/rmsnorm.py
   baseline: baselines/rmsnorm.py
+  nki_baseline: nki_baselines/rmsnorm.py
   params: [batch_size, features, dim1, dim2]
   presets:
     small:   {batch_size: 2,   features: 8,  dim1: 32,  dim2: 32}
@@ -77,6 +85,7 @@ gemm_scale_batchnorm:
 gemm_scale_residual:
   problem: problems/gemm_scale_residual.py
   baseline: baselines/gemm_scale_residual.py
+  nki_baseline: nki_baselines/gemm_scale_residual.py
   params: [batch_size, in_features, out_features, scaling_factor]
   presets:
     small:   {batch_size: 64,    in_features: 512,  out_features: 512,  scaling_factor: 0.5}
@@ -85,6 +94,7 @@ gemm_scale_residual:
 gemm_swish_scaling:
   problem: problems/gemm_swish_scaling.py
   baseline: baselines/gemm_swish_scaling.py
+  nki_baseline: nki_baselines/gemm_swish_scaling.py
   params: [batch_size, in_features, out_features, scaling_factor]
   presets:
     small:   {batch_size: 128, in_features: 256,   out_features: 256,   scaling_factor: 2.0}
@@ -109,6 +119,7 @@ gemm_groupnorm_swish_multiply_swish:
 sdpa:
   problem: problems/sdpa.py
   baseline: baselines/sdpa.py
+  nki_baseline: nki_baselines/sdpa.py
   params: [batch, heads, seq, dim]
   presets:
     small:  {batch: 1,  heads: 1,  seq: 64,  dim: 128}
@@ -119,6 +130,7 @@ sdpa:
 minigpt_block:
   problem: problems/minigpt_block.py
   baseline: baselines/minigpt_block.py
+  nki_baseline: nki_baselines/minigpt_block.py
   params: [batch_size, seq_len, n_embd, n_head, max_seqlen]
   presets:
     small:   {batch_size: 4,   seq_len: 64,  n_embd: 128, n_head: 4, max_seqlen: 128}
@@ -126,31 +138,38 @@ minigpt_block:
 
 mamba2:
   problem: problems/mamba2.py
-  baseline: null
+  baseline: baselines/mamba2.py
+  nki_baseline: nki_baselines/mamba2.py
   params: [batch_size, seq_length, n_heads, d_head, d_state, block_len]
   presets:
     small:   {batch_size: 4,    seq_length: 64,  n_heads: 2, d_head: 16, d_state: 4,  block_len: 32}
+    medium:  {batch_size: 16,   seq_length: 128, n_heads: 4, d_head: 32, d_state: 8,  block_len: 32}
     default: {batch_size: 2048, seq_length: 128, n_heads: 8, d_head: 64, d_state: 16, block_len: 64}
 
 mlp:
   problem: problems/mlp.py
-  baseline: null
+  baseline: baselines/mlp.py
+  nki_baseline: nki_baselines/mlp.py
   params: [batch_size, input_size, layer_sizes, output_size]
   presets:
     small:   {batch_size: 16,  input_size: 256,   layer_sizes: [256, 256],     output_size: 128}
+    medium:  {batch_size: 32,  input_size: 1024,  layer_sizes: [1024, 1024],   output_size: 512}
     default: {batch_size: 128, input_size: 16384, layer_sizes: [16384, 16384], output_size: 8192}
 
 mlp_shallow_wide:
   problem: problems/mlp_shallow_wide.py
-  baseline: null
+  baseline: baselines/mlp_shallow_wide.py
+  nki_baseline: nki_baselines/mlp_shallow_wide.py
   params: [batch_size, input_size, hidden_layer_sizes, output_size]
   presets:
     small:   {batch_size: 16,  input_size: 256,   hidden_layer_sizes: [512, 512],     output_size: 256}
+    medium:  {batch_size: 32,  input_size: 1024,  hidden_layer_sizes: [2048, 2048],   output_size: 1024}
     default: {batch_size: 128, input_size: 16384, hidden_layer_sizes: [32768, 32768], output_size: 16384}
 
 moe:
   problem: problems/moe.py
   baseline: baselines/moe.py
+  nki_baseline: nki_baselines/moe.py
   params: [num_tokens, hidden_dim, intermediate_dim, num_experts]
   presets:
     small:   {num_tokens: 64,  hidden_dim: 64,  intermediate_dim: 256, num_experts: 2}

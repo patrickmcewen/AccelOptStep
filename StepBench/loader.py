@@ -48,3 +48,13 @@ def load_baseline(bench_name):
         return None
     module_name = baseline_path.replace("/", ".").removesuffix(".py")
     return importlib.import_module(f"StepBench.{module_name}")
+
+
+def load_nki_baseline(bench_name):
+    """Import and return the NKI baseline module, or None if no NKI baseline exists."""
+    config = load_config()
+    nki_path = config[bench_name].get("nki_baseline")
+    if not nki_path:
+        return None
+    module_name = nki_path.replace("/", ".").removesuffix(".py")
+    return importlib.import_module(f"StepBench.{module_name}")
