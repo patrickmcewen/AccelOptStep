@@ -64,6 +64,140 @@ OffChipStore(
 )
 ```
 
+### RandomOffChipLoad — Load tiles from HBM using address stream (indirect access)
+```python
+RandomOffChipLoad(
+    graph=MultiDiGraph,
+    underlying=torch.Tensor,       # Source tensor (HBM)
+    raddr=StepOps,                 # Address stream — each element is a (1,1) Uint64 tile
+    tile_row=int,                  # Tile height
+    tile_col=int,                  # Tile width
+    base_addr_byte=int,            # Base address offset in bytes
+    par_dispatch=int,              # Parallel tile transfers
+    mock_bf16=False,
+)
+```
+**Shape rule:** Output stream shape = `raddr.shape`, dtype = `Tile(tile_row, tile_col)`.
+**Use case:** Loading expert weights in MoE — the address stream determines which tiles to fetch. Unlike OffChipLoad (which uses fixed strides), this supports arbitrary access patterns driven by a dynamic address stream.
+
+**Example — MoE expert weight loading:**
+```python
+# addr_gen produces addresses for each expert's weight tiles
+# addr_gen: shape=(DynDim, num_tile_per_expert, 1), dtype=Tile(Uint64, (1,1))
+w_load = RandomOffChipLoad(
+    graph=graph, underlying=stacked_weights,
+    raddr=addr_gen, tile_row=tile_N, tile_col=N,
+    base_addr_byte=0, par_dispatch=par_dispatch,
+)
+# w_load: shape=addr_gen.shape, tile=Tile(tile_N, N)
+```
+
+### RandomOffChipStore — Store tiles to HBM using address stream (indirect access)
+```python
+RandomOffChipStore(
+    graph=MultiDiGraph,
+    underlying=torch.Tensor,       # Destination tensor shape reference
+    wdata=StepOps,                 # Data stream to write
+    waddr=StepOps,                 # Address stream — (1,1) Uint64 tiles
+    tile_row=int,                  # Tile height
+    tile_col=int,                  # Tile width
+    base_addr_byte=int,            # Base address offset in bytes
+    par_dispatch=int,              # Parallel tile transfers
+    ack_based_on_waddr=True,       # Ack shape based on waddr (True) or wdata (False)
+    buffer_depth=1,                # Store buffer depth
+    mock_bf16=False,
+)
+```
+**Shape rule:** Output stream (ack) shape = `waddr.shape` (if ack_based_on_waddr) or `wdata.shape`, dtype = `Bool`.
+**Use case:** Writing results back to HBM at dynamically-computed addresses (e.g., KV cache updates).
+
+### DynOffChipLoad — Dynamic off-chip load with ref stream
+```python
+DynOffChipLoad(
+    graph=MultiDiGraph,
+    ref=StepOps,                   # Reference stream (determines outer shape)
+    underlying=torch.Tensor,       # Source tensor
+    stride=(s0, s1, ...),          # Stride per inner dimension
+    out_shape_tiled=(d0, d1, ...), # Inner tiled shape appended to ref shape
+    tile_row=int,                  # Tile height
+    tile_col=int,                  # Tile width
+    par_dispatch=int,              # Parallel tile transfers
+    mock_bf16=False,
+)
+```
+**Shape rule:** Output stream shape = `ref.shape + out_shape_tiled`, dtype = `Tile(tile_row, tile_col)`.
+**Use case:** Loading tiles whose outer iteration is driven by a dynamic ref stream (e.g., loading per-token data where the number of tokens is dynamic).
+
+---
+
+## Generator Operators (from utility_ops)
+
+### SelectGen — Generate selector stream from tensor
+```python
+SelectGen(is_multihot=bool, tensor=torch.Tensor, n=int)
+```
+**Shape rule:** Output shape = `(1,) + tensor.shape[:-1]`.
+**Dtype:** `MultiHot(n)` if `is_multihot=True`, else `Index(n)`.
+**Use case:** Creates routing control streams for FlatPartition/FlatReassemble. The tensor encodes which consumer each element should be sent to.
+
+**Example — MoE top-1 routing:**
+```python
+# expert_idx: (B,) int tensor of expert assignments
+# multihot: (B, E) one-hot tensor from F.one_hot(expert_idx, E)
+selector = SelectGen(is_multihot=True, tensor=multihot, n=E)
+# selector: shape=(1, B), dtype=MultiHot(E)
+# Use as control input to FlatPartition
+```
+
+### ExpertAddrGen — Generate expert weight addresses
+```python
+ExpertAddrGen(
+    graph=MultiDiGraph,
+    input=StepOps,                 # Input stream (drives iteration)
+    num_tile_per_expert=int,       # Number of tiles per expert
+    expert_addr_base=int,          # Base address for expert weights
+)
+```
+**Shape rule:** Output shape = `input.shape + (num_tile_per_expert, 1)`, dtype = `Tile(Uint64(), (1,1))`.
+**Use case:** Generates tile addresses for RandomOffChipLoad to fetch the correct expert weights in MoE.
+
+**Example:**
+```python
+# merged_data: (DynDim,) — merged expert token stream
+addr_gen = ExpertAddrGen(
+    graph=graph, input=merged_data,
+    num_tile_per_expert=D // tile_N,  # tiles per expert
+    expert_addr_base=D * N * 4,       # byte offset between experts
+)
+# addr_gen: shape=(DynDim, D//tile_N, 1), dtype=Tile(Uint64, (1,1))
+```
+
+### MetadataGen — Generate metadata stream from tensor
+```python
+MetadataGen(tensor=torch.Tensor)
+```
+**Shape rule:** Output shape = `(1,) + tensor.shape`, dtype = `Tile(Uint64(), (1,1))`.
+**Use case:** Injects precomputed metadata (e.g., sequence lengths, token indices) into the dataflow graph.
+
+### CacheReadAddrGen — Generate KV cache read addresses
+```python
+CacheReadAddrGen(
+    graph=MultiDiGraph,
+    idx=StepOps,                   # Token/batch index stream
+    seq_len=StepOps,               # Sequence length stream
+    row_offset=int,                # Row offset in the KV cache
+)
+```
+**Shape rule:** Output shape = `idx.shape + (DynDim,)`, dtype = `Tile(Uint64(), (1,1))`.
+**Use case:** Generates read addresses for KV cache access in attention decoding. Decomposes into multiply-by-constant + counter + add.
+
+### FilterLastTile — Filter stream for last-tile detection
+```python
+FilterLastTile(graph=MultiDiGraph, input=StepOps)
+```
+**Shape rule:** Output shape = `input.shape + (DynDim,)`, dtype = `MultiHot(2)`.
+**Use case:** Generates a 2-way MultiHot selector that distinguishes the last tile from non-last tiles. Used for conditional processing at tile boundaries.
+
 ---
 
 ## Compute Operators
@@ -295,14 +429,16 @@ If `filter_mask=True`, last dim becomes DynDim.
 
 ### map_fn (for BinaryMap, UnaryMap)
 - `map_fn.Matmul(weight_transposed=False)` — `Tile(M,K) @ Tile(K,N) → Tile(M,N)`
-- `map_fn.Add()` — element-wise add, same tile shape
-- `map_fn.Mul()` — element-wise multiply, same tile shape
+- `map_fn.Add()` — element-wise add, broadcasts `Tile(1,N)` or `Tile(M,1)` operands
+- `map_fn.Mul()` — element-wise multiply, broadcasts `Tile(1,N)` or `Tile(M,1)` operands
 - `map_fn.Div()` — element-wise divide, broadcasts `Tile(M,1)` denominator
-- `map_fn.Silu()` — SiLU activation, same tile shape
-- `map_fn.Exp()` — exponential, same tile shape
-- `map_fn.RowWiseSum()` — `Tile(M,N) → Tile(M,1)` (reduce columns)
-- `map_fn.RowWiseAppend()` — append rows
-- `map_fn.DynMatmul(weight_transposed=False)` — dynamic shape matmul
+- `map_fn.Silu()` — SiLU activation, same tile shape (unary)
+- `map_fn.Exp()` — exponential, same tile shape (unary)
+- `map_fn.RowWiseSum()` — `Tile(M,N) → Tile(M,1)` (reduce columns, unary)
+- `map_fn.RowWiseAppend()` — append row to tile: `(Tile(N,D), Tile(1,D)) → Tile(N,D)` (binary)
+- `map_fn.SetOffset()` — set tile offset: `(Tile(M,N), Tile(1,1)) → Tile(M,N)` (binary)
+- `map_fn.CacheWriteAddrGen(row_offset=int)` — generate cache write address: `(Tile(Uint64,1,1), Tile(Uint64,1,1)) → Tile(Uint64,1,1)` (binary)
+- `map_fn.DynMatmul(weight_transposed=False)` — dynamic shape matmul, supports DynTile inputs
 
 ### map_accum_fn (for BinaryMapAccum)
 - `map_accum_fn.Matmul(weight_transposed=False)` — `Tile(M,K) @ Tile(K,N) → Tile(M,N)`
@@ -312,11 +448,42 @@ If `filter_mask=True`, last dim becomes DynDim.
 ### accum_fn (for Accum)
 - `accum_fn.Add()` — sum tiles element-wise
 - `accum_fn.Mul()` — multiply tiles element-wise
-- `accum_fn.RetileRow()` — retile along rows during accumulation
+- `accum_fn.RetileRow()` — retile along rows: accumulates `Tile(1,D)` rows into `Tile(N,D)` tile
+- `accum_fn.SignalReqAllRead()` — signal for all-read synchronization, outputs `Tile(Uint64, (1,1))`
 
 ### init_fn (for BinaryMapAccum, Accum)
 - `init_fn.Zero(shape=(rows, cols), dtype=Float32())` — initialize to zeros
 - `init_fn.Empty(shape=(rows, cols), dtype=Float32())` — uninitialized (use when first write overwrites entirely)
+
+### Data Types
+
+**Element types (for Tile dtype):**
+- `Float32()` — 32-bit float (4 bytes)
+- `Float16()` — 16-bit float (2 bytes)
+- `Uint32()` — 32-bit unsigned integer (4 bytes)
+- `Uint64()` — 64-bit unsigned integer (8 bytes, used for addresses)
+- `Bool()` — boolean (1 byte, used for ack streams)
+
+**Stream dtype types:**
+- `Tile(tile_dtype=ElementTP, shape=(rows, cols))` — fixed-size tile
+- `DynTile(tile_dtype=ElementTP, shape=(rows_or_DynDim, cols_or_DynDim))` — tile with dynamic dimensions
+- `Buffer(buff_dtype=Tile, shape=(...))` — on-chip buffer holding tiles (output of Bufferize)
+- `MultiHot(total_n=int)` — multi-hot selector (used by SelectGen, FlatPartition)
+- `Index(active_n=int)` — index selector
+
+**Import locations:**
+```python
+from step_py.datatype import Float32, Float16, Uint32, Uint64, Bool, Tile, DynTile, Buffer, MultiHot, Index
+from step_py.ops import (
+    OffChipLoad, OffChipStore, RandomOffChipLoad, RandomOffChipStore, DynOffChipLoad,
+    BinaryMap, UnaryMap, BinaryMapAccum, Accum,
+    Promote, ExpandRef, RepeatStatic, Flatten, Reshape,
+    Bufferize, Streamify, DynStreamify,
+    Broadcast, Parallelize, FlatPartition, FlatReassemble, EagerMerge, RetileStreamify,
+)
+from step_py.utility_ops import SelectGen, ExpertAddrGen, MetadataGen, CacheReadAddrGen, FilterLastTile
+from step_py.functions import map_fn, map_accum_fn, accum_fn, init_fn
+```
 
 ---
 

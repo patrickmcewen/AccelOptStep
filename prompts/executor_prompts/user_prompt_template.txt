@@ -41,7 +41,8 @@ Before the final `return (graph, output_op)`, emit this checklist as a comment b
 # [ ] on_chip_bytes estimate within 32 MB?
 
 Output ONLY the optimized `build_graph` function wrapped in a code block.
-Your code should start after the preamble shown below.
+Your code should start after the preamble shown below. Any pytorch tensors you will need
+should be created at the start of the function, and should be seeded with torch.manual_seed(SEED) in order to match the gold model.
 
 {preamble}
 
