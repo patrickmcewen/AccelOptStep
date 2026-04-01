@@ -90,17 +90,8 @@ def construct_executor_prompt(config: ExecutorPromptConfig, executor_experiences
     else:
         baseline_block = ""
     # Build preamble showing the LLM the exact module-level variables available
-    if config.values_json:
-        dims = json.loads(config.values_json)
-        preamble_lines = [f"{k} = {v!r}" for k, v in dims.items()]
-        preamble_block = (
-            "# Available module-level constants (provided externally, do NOT redefine):\n"
-            "```python\n" + "\n".join(preamble_lines) + "\n```\n"
-            "# NOTE: Only these scalar constants are module-level. Input tensors (e.g. Q, K, V)\n"
-            "# must be created INSIDE build_graph() using torch.randn() or similar.\n"
-        )
-    else:
-        preamble_block = ""
+    dims = json.loads(config.values_json)
+    preamble_lines = [f"{k} = {v!r}" for k, v in dims.items()]
 
     user_prompt = (
         prompt_template
@@ -109,7 +100,7 @@ def construct_executor_prompt(config: ExecutorPromptConfig, executor_experiences
         .replace("{baseline_context}", baseline_block)
         .replace("{optimization_plan}", config.optimization_plan)
         .replace("{executor_experiences}", executor_experiences_block)
-        .replace("{preamble}", preamble_block)
+        .replace("{preamble}", STEP_IMPORTS + "\n" + "\n".join(preamble_lines))
     )
     return user_prompt
 

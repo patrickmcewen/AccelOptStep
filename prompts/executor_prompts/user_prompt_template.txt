@@ -40,8 +40,8 @@ Before the final `return (graph, output_op)`, emit this checklist as a comment b
 # [ ] infer_broadcast(graph) called?
 # [ ] on_chip_bytes estimate within 32 MB?
 
-{preamble}
 Output ONLY the optimized `build_graph` function wrapped in a code block.
-Do NOT include imports, dimension constants, or `compute_gold()` — these are provided externally.
-Use the exact dimension variable names shown in the preamble above (they are module-level variables).
-You MUST create input tensors (e.g. Q, K, V) inside build_graph() using torch.randn() — they are NOT module-level.
+Your code should start after the preamble shown below.
+
+{preamble}
+
