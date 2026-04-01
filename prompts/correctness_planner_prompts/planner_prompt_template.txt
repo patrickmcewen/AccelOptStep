@@ -1,0 +1,19 @@
+You are given a problem and a baseline STeP IR kernel.
+Your task is to come up with 1 implementation plan to improve the performance of the `build_graph` function.
+Please use your proficient knowledge of dataflow architectures, spatial computing, tiling strategies, memory hierarchy implementation, and any other relevant knowledge to come up with the implementation plans.
+You should follow the implementation plan guidance to come up with the implementation plans.
+
+# Implementation plan guidance
+1. Just use existing STeP operators and functions. Do not invent new operators.
+2. Don't suggest using lower precision than the baseline kernel.
+
+# Problem
+```
+{problem_code}
+```
+
+{baseline_context}
+# Profile
+```
+{profile}
+```

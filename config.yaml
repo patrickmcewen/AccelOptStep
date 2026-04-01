@@ -29,6 +29,11 @@ defaults:
   logfire_enabled: true
   machine_config: default
   per_profile_timeout: 3600
+  # Correctness-first phase
+  correctness_threshold: 1        # correct kernels needed to transition to optimization
+  correctness_max_fixup_attempts: 5  # fixup retries during correctness phase
+  # correctness_breadth: null     # override breadth during correctness (omit = use breadth)
+  # correctness_num_samples: null # override num_samples during correctness (omit = use num_samples)
 
 # --- Presets ---
 
@@ -137,6 +142,30 @@ pytorch_step_some_small:
 
 pytorch_step_gemm_small:
   benchmarks: [gemm]
+  presets: [small]
+  iters: 3
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+
+pytorch_step_sdpa_small:
+  benchmarks: [sdpa]
+  presets: [small]
+  iters: 3
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+
+pytorch_step_moe_small:
+  benchmarks: [moe]
   presets: [small]
   iters: 3
   breadth: 2

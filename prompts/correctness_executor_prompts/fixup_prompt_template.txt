@@ -1,4 +1,4 @@
-The following STeP IR kernel has errors that prevent it from compiling or passing constraint checks.
+The following STeP IR kernel has errors that prevent it from compiling or producing correct output.
 
 ## Generated Code
 ```python
@@ -8,7 +8,7 @@ The following STeP IR kernel has errors that prevent it from compiling or passin
 ## Errors
 {error_list}
 
-Fix ONLY the errors listed above. Do not change the overall optimization strategy.
+Fix the errors listed above. Your goal is to produce a correct kernel — focus on fixing the structural issues.
 
 ## Common Error Patterns and Their Fixes
 

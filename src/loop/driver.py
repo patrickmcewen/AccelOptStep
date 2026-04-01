@@ -1,15 +1,34 @@
-"""Run the full experiment loop: first iteration + N subsequent iterations."""
+"""Run the full experiment loop: correctness phase + optimization phase."""
 
-import argparse
+import json
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from src.loop import accum_rewrites, body_iter, first_iter, init_iter
+from src.loop import accum_rewrites, body_iter, correctness_iter, init_iter
 from src.loop.logging_config import setup_problem_logger
+from src.loop.phase_state import (
+    load_phase_state, save_phase_state, get_phase, init_service_state,
+    record_correct_kernel, check_transition, get_best_correct_kernel,
+)
+from src.loop.scan_results import scan_for_correct_kernels
 
 LA = ZoneInfo("America/Los_Angeles")
+
+
+def _get_service_name(exp_base_dir: Path) -> str:
+    """Extract service name from the exp_base_dir path (it's the directory name)."""
+    return exp_base_dir.name
+
+
+def _write_correct_baseline(exp_dir: Path, kernel_code: str, metadata: dict) -> None:
+    """Write the correct kernel as the new baseline for optimization."""
+    candidates_dir = exp_dir / "candidates"
+    candidates_dir.mkdir(parents=True, exist_ok=True)
+    (candidates_dir / "correct_baseline.py").write_text(kernel_code)
+    (candidates_dir / "correct_baseline_metadata.json").write_text(json.dumps(metadata))
 
 
 def run(
@@ -34,13 +53,28 @@ def run(
     machine_config_preset: str = "default",
     resume: bool = False,
     include_baseline: bool = False,
+    # Correctness-first phase parameters
+    correctness_threshold: int = 1,
+    correctness_max_fixup_attempts: int = 5,
+    correctness_breadth: int | None = None,
+    correctness_num_samples: int | None = None,
 ) -> None:
     setup_problem_logger(log_file)
 
     base_dir = Path(os.environ["ACCELOPT_BASE_DIR"])
     log_path = exp_base_dir / "log.txt"
 
-    # Common kwargs passed to first_iter / body_iter / accum_rewrites
+    service_name = _get_service_name(exp_base_dir)
+
+    # Load or initialize phase state
+    phase_state = load_phase_state(exp_base_dir)
+    phase_state = init_service_state(phase_state, service_name)
+
+    # Resolve correctness-phase overrides
+    c_breadth = correctness_breadth if correctness_breadth is not None else breadth
+    c_num_samples = correctness_num_samples if correctness_num_samples is not None else num_samples
+
+    # Common kwargs passed to body_iter / accum_rewrites
     common = dict(
         exp_base_dir=exp_base_dir,
         profile_mode=profile_mode,
@@ -64,7 +98,7 @@ def run(
         print(f">>> RESUME: {len(entries)} iterations done, {remaining} remaining")
         last_exp_date = entries[-1]
     else:
-        # First iteration
+        # First iteration (always correctness phase)
         experience_list_path = base_dir / "prompts" / "empty_rewrites.json"
 
         if not log_path.exists():
@@ -72,15 +106,25 @@ def run(
         with open(log_path, "a") as f:
             f.write(f"{init_exp_date}\n")
 
-        first_iter.run(
+        correctness_iter.run(
             exp_date=init_exp_date,
             experience_list_path=experience_list_path,
-            breadth=breadth,
-            num_samples=num_samples,
+            breadth=c_breadth,
+            num_samples=c_num_samples,
             exp_n=exp_n,
             rel_tol=rel_tol,
+            max_fixup_attempts=correctness_max_fixup_attempts,
             **common,
         )
+
+        # Scan for correct kernels
+        executor_results_path = exp_base_dir / init_exp_date / "executor_results.json"
+        if executor_results_path.exists():
+            correct = scan_for_correct_kernels(executor_results_path, init_exp_date)
+            for k in correct:
+                phase_state = record_correct_kernel(phase_state, service_name, k)
+            check_transition(phase_state, service_name, correctness_threshold)
+            save_phase_state(exp_base_dir, phase_state)
 
         last_exp_date = init_exp_date
         remaining = iters
@@ -92,43 +136,92 @@ def run(
         with open(log_path, "a") as f:
             f.write(f"{current_exp_date}\n")
 
-        experience_list_path = exp_base_dir / last_exp_date / "rewrites" / "aggregated_rewrites_list.json"
-        (exp_base_dir / current_exp_date).mkdir(parents=True, exist_ok=True)
+        phase = get_phase(phase_state, service_name)
 
-        init_iter.run(
-            exp_date=current_exp_date,
-            last_exp_date=last_exp_date,
-            exp_base_dir=exp_base_dir,
-            project_name=project_name,
-            org_name=org_name,
-            logfire_enabled=logfire_enabled,
-            log_file=log_file,
-        )
+        if phase == "correctness":
+            # Correctness iteration — no accum_rewrites, use correctness prompts
+            experience_list_path = exp_base_dir / last_exp_date / "rewrites" / "aggregated_rewrites_list.json"
+            (exp_base_dir / current_exp_date).mkdir(parents=True, exist_ok=True)
 
-        accum_rewrites.run(
-            exp_date=current_exp_date,
-            max_threshold=max_threshold,
-            min_threshold=min_threshold,
-            topk=topk,
-            topk_candidates=topk_candidates,
-            rel_tol=rel_tol,
-            **common,
-        )
+            # Copy prior candidates (profile_results.csv) for planner context
+            prior_candidates = exp_base_dir / last_exp_date / "candidates"
+            current_candidates = exp_base_dir / current_exp_date / "candidates"
+            current_candidates.mkdir(parents=True, exist_ok=True)
+            prior_profile = prior_candidates / "profile_results.csv"
+            if prior_profile.exists():
+                shutil.copy2(prior_profile, current_candidates / "profile_results.csv")
 
-        body_iter.run(
-            exp_date=current_exp_date,
-            experience_list_path=experience_list_path,
-            breadth=breadth,
-            num_samples=num_samples,
-            exp_n=exp_n,
-            rel_tol=rel_tol,
-            **common,
-        )
+            correctness_iter.run(
+                exp_date=current_exp_date,
+                experience_list_path=experience_list_path,
+                breadth=c_breadth,
+                num_samples=c_num_samples,
+                exp_n=exp_n,
+                rel_tol=rel_tol,
+                max_fixup_attempts=correctness_max_fixup_attempts,
+                **common,
+            )
+
+            # Scan for correct kernels
+            executor_results_path = exp_base_dir / current_exp_date / "executor_results.json"
+            if executor_results_path.exists():
+                correct = scan_for_correct_kernels(executor_results_path, current_exp_date)
+                for k in correct:
+                    phase_state = record_correct_kernel(phase_state, service_name, k)
+                transitioned = check_transition(phase_state, service_name, correctness_threshold)
+                if transitioned:
+                    # Write the best correct kernel as the new baseline
+                    best = get_best_correct_kernel(phase_state, service_name)
+                    assert best is not None, "Transitioned but no correct kernel found"
+                    _write_correct_baseline(
+                        exp_base_dir / current_exp_date,
+                        best["code"],
+                        best["metadata"],
+                    )
+                    print(f">>> Phase transition: correctness -> optimization (found {len(correct)} correct kernels)")
+                save_phase_state(exp_base_dir, phase_state)
+
+        else:
+            # Optimization iteration — standard flow
+            (exp_base_dir / current_exp_date).mkdir(parents=True, exist_ok=True)
+            experience_list_path = exp_base_dir / last_exp_date / "rewrites" / "aggregated_rewrites_list.json"
+
+            init_iter.run(
+                exp_date=current_exp_date,
+                last_exp_date=last_exp_date,
+                exp_base_dir=exp_base_dir,
+                project_name=project_name,
+                org_name=org_name,
+                logfire_enabled=logfire_enabled,
+                log_file=log_file,
+            )
+
+            accum_rewrites.run(
+                exp_date=current_exp_date,
+                max_threshold=max_threshold,
+                min_threshold=min_threshold,
+                topk=topk,
+                topk_candidates=topk_candidates,
+                rel_tol=rel_tol,
+                **common,
+            )
+
+            body_iter.run(
+                exp_date=current_exp_date,
+                experience_list_path=experience_list_path,
+                breadth=breadth,
+                num_samples=num_samples,
+                exp_n=exp_n,
+                rel_tol=rel_tol,
+                **common,
+            )
 
         last_exp_date = current_exp_date
 
 
 if __name__ == "__main__":
+    import argparse
+
     parser = argparse.ArgumentParser(description="Run full experiment loop")
     parser.add_argument("--exp_base_dir", type=Path, required=True)
     parser.add_argument("--init_exp_date", type=str, required=True)
@@ -148,8 +241,12 @@ if __name__ == "__main__":
     parser.add_argument("--log_file", type=Path, required=True)
     parser.add_argument("--machine_config_path", type=str, default=None)
     parser.add_argument("--machine_config_preset", type=str, default="default")
-    parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in log.txt")
-    parser.add_argument("--include_baseline", action="store_true", help="Include baseline kernel code in prompts")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--include_baseline", action="store_true")
+    parser.add_argument("--correctness_threshold", type=int, default=1)
+    parser.add_argument("--correctness_max_fixup_attempts", type=int, default=5)
+    parser.add_argument("--correctness_breadth", type=int, default=None)
+    parser.add_argument("--correctness_num_samples", type=int, default=None)
     args = parser.parse_args()
 
     run(
@@ -173,4 +270,8 @@ if __name__ == "__main__":
         machine_config_preset=args.machine_config_preset,
         resume=args.resume,
         include_baseline=args.include_baseline,
+        correctness_threshold=args.correctness_threshold,
+        correctness_max_fixup_attempts=args.correctness_max_fixup_attempts,
+        correctness_breadth=args.correctness_breadth,
+        correctness_num_samples=args.correctness_num_samples,
     )

@@ -55,16 +55,12 @@ def build_graph(dims):
 
     # ========== Replicate RNG sequence from compute_gold ==========
     torch.manual_seed(SEED)
-    model = nn.Linear(D, E, bias=False)            # gate weights
     expert_linears = [nn.Linear(D, N, bias=False) for _ in range(E)]
 
     torch.manual_seed(SEED)
     x = torch.randn(B, D, dtype=torch.float32)
 
-    # Pre-compute routing on host (deterministic)
-    with torch.no_grad():
-        gate_scores = F.linear(x, model.weight)    # (B, E)
-        expert_idx = gate_scores.argmax(dim=-1)     # (B,)
+    expert_idx = torch.randint(0, E, (B,))
 
     # Create multihot selector: (B, E) binary tensor (int64 for SelectGen)
     multihot = F.one_hot(expert_idx, num_classes=E)  # (B, E) int64

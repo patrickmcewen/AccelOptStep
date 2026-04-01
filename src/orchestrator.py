@@ -122,6 +122,11 @@ def scaffold_experiments(script_dir: Path, checkpoint_dir: Path, configs_dir: Pa
             machine_config_path=machine_config_path,
             machine_config_preset=machine_config_preset,
             include_baseline=include_baseline,
+            # Correctness-first phase
+            correctness_threshold=cfg.get("correctness_threshold", 1),
+            correctness_max_fixup_attempts=cfg.get("correctness_max_fixup_attempts", 5),
+            correctness_breadth=cfg.get("correctness_breadth"),
+            correctness_num_samples=cfg.get("correctness_num_samples"),
         )
         problem_configs.append((service_name, loop_kwargs))
 
@@ -290,6 +295,11 @@ def resume_experiment(checkpoint_dir: Path, cfg: dict, script_dir: Path,
             machine_config_preset=machine_config_preset,
             resume=True,
             include_baseline=cfg.get("include_baseline", False),
+            # Correctness-first phase
+            correctness_threshold=cfg.get("correctness_threshold", 1),
+            correctness_max_fixup_attempts=cfg.get("correctness_max_fixup_attempts", 5),
+            correctness_breadth=cfg.get("correctness_breadth"),
+            correctness_num_samples=cfg.get("correctness_num_samples"),
         )
         problem_configs.append((service_name, loop_kwargs))
 

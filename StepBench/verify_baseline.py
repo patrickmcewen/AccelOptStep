@@ -21,12 +21,21 @@ import tempfile
 
 import torch
 import yaml
+from pathlib import Path
 
-# Ensure step_artifact is importable (mirrors PYTHONPATH from env.sh)
-STEP_SRC = os.environ.get(
-    "STEP_ARTIFACT_SRC",
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "../../step_artifact/src")),
-)
+STEP_SRC = os.environ.get("STEP_ARTIFACT_SRC")
+if not STEP_SRC:
+    _cached = Path.home() / ".cache" / "acceloptstep" / "step_artifact_src"
+    _local = Path(__file__).resolve().parent.parent / "step_artifact" / "src"
+    if _cached.is_dir():
+        STEP_SRC = str(_cached)
+    elif _local.is_dir():
+        STEP_SRC = str(_local)
+    else:
+        sys.exit(
+            "Cannot find step_artifact sources. Set STEP_ARTIFACT_SRC or ensure "
+            "~/.cache/acceloptstep/step_artifact_src/ exists."
+        )
 for subdir in ["proto", "sim", "step_py", ""]:
     p = os.path.join(STEP_SRC, subdir)
     if p not in sys.path:

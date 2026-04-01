@@ -1,0 +1,46 @@
+Your task is to implement the following PyTorch computation as a correct STeP IR `build_graph()` function.
+
+An agent has analyzed the problem and proposed an implementation approach. Follow the approach to write the kernel.
+
+# PyTorch Reference
+```
+{problem_code}
+```
+
+{executor_experiences}
+# Kernel usage
+```
+graph, output_op = build_graph()
+# Symbolic profiling:
+#   for node in graph.nodes():
+#       if isinstance(node, StepOps):
+#           total_off_chip += node.off_chip_traffic()
+#           total_on_chip += node.on_chip_requirement()
+#
+# Cycle-accurate profiling:
+#   cycles, ms, s = simulate(graph, ...)
+```
+
+# Implementation Approach
+```
+{optimization_plan}
+```
+
+Before each operator call, emit a comment of the form:
+# [op_name] in: (shape, dtype) → out: (shape, dtype)
+# e.g. # [Bufferize] in: (1, 4, 8, 16), Tile(64,128) → out: (1, 4), Buffer(Tile(64,128), shape=(8,16))
+
+Before the final `return (graph, output_op)`, emit this checklist as a comment block:
+# CHECKLIST:
+# [ ] BinaryMapAccum inputs: in1.shape == in2.shape? (verify)
+# [ ] compute_bw total: sum = ? (must be ≤ 4096)
+# [ ] All intermediate ops: write_back_mu=False?
+# [ ] infer_broadcast(graph) called?
+# [ ] on_chip_bytes estimate within 32 MB?
+# [ ] RNG seeding matches compute_gold() order?
+
+Output ONLY the `build_graph` function wrapped in a code block.
+Your code should start after the preamble shown below. Any pytorch tensors you will need
+should be created at the start of the function, and should be seeded with torch.manual_seed(SEED) in order to match the gold model.
+
+{preamble}

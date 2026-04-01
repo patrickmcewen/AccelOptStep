@@ -1,0 +1,151 @@
+# STeP Operator Reference — Shape Rules & Constraints
+
+## Shape Notation
+
+All streams have shape `(1, d0, d1, ..., dN)` where the leading `1` is implicit.
+Tile dtype is written as `Tile(rows, cols)`. Shape transformations show how
+input shape maps to output shape.
+
+---
+
+## Data Movement Operators
+
+### OffChipLoad — Load tiles from HBM
+```python
+OffChipLoad(
+    underlying=torch.Tensor,       # Source tensor
+    stride=(s0, s1, ...),          # Stride per output dimension (0 = broadcast)
+    out_shape_tiled=(d0, d1, ...), # Output stream shape (in tiles)
+    tile_row=int,                  # Tile height
+    tile_col=int,                  # Tile width
+    par_dispatch=int,              # Parallel tile transfers (tunable per-operator)
+)
+```
+**Shape rule:** Output stream shape = `(1,) + out_shape_tiled`, dtype = `Tile(tile_row, tile_col)`
+
+**Stride convention:** `stride[i]` = number of tiles to advance in the underlying tensor when dimension `i` of `out_shape_tiled` increments by 1. Use `0` for broadcast dimensions (same data reused across that dimension).
+
+**CRITICAL:** `underlying` must be **at least 2D**. For scalars, use shape `(1, 1)` not `(1,)`.
+
+### OffChipStore — Store tiles to HBM (sink, no output stream)
+```python
+OffChipStore(graph, input, par_dispatch=int, store_file_name="output")
+```
+
+---
+
+## Compute Operators
+
+### BinaryMap — Element-wise binary operation
+```python
+BinaryMap(graph, in1, in2, fn=map_fn.X(), write_back_mu=bool, compute_bw=int)
+```
+**Shape rule:** Output shape = `in1.shape`. Both inputs must have matching static dimensions.
+
+### UnaryMap — Element-wise unary operation
+```python
+UnaryMap(graph, input, fn=map_fn.X(), write_back_mu=bool, compute_bw=int)
+```
+**Shape rule:** Output shape = input shape.
+
+### BinaryMapAccum — Binary op with reduction (GEMM)
+```python
+BinaryMapAccum(graph, in1, in2, fn, init_fn, rank, write_back_mu, compute_bw)
+```
+**Shape rule:** Output shape = `in1.shape[:-rank]`. Removes the last `rank` dimensions (reduction).
+**CRITICAL:** `in1.shape == in2.shape` — both inputs must have identical shapes.
+**init_fn shape** must match the output tile shape.
+
+### Accum — Reduction/accumulation
+```python
+Accum(graph, input, output_stream_dtype, fn, init_fn, accum_rank, write_back_mu, compute_bw)
+```
+**Shape rule:** Output shape = `input.shape[:-accum_rank]`. Removes the last `accum_rank` dimensions.
+
+---
+
+## Shape Transformation Operators
+
+### Promote — Insert size-1 dimension
+```python
+Promote(graph, input, promote_rank=int)
+```
+**Shape rule:** Inserts a `1` at position `len(shape) - promote_rank` from the left.
+
+### ExpandRef — Expand size-1 dims to match reference
+```python
+ExpandRef(graph, input, ref, expand_rank=int)
+```
+**Shape rule:** Output shape = `ref.shape`. The last `expand_rank` dims of input must be `1`.
+**Constraint:** `input.shape[:-expand_rank] == ref.shape[:-expand_rank]` (outer dims match).
+
+### RepeatStatic — Append a new innermost dimension
+```python
+RepeatStatic(graph, input, repeat_factor=int)
+```
+**Shape rule:** Output shape = `input.shape + (repeat_factor,)`. Adds one dimension.
+
+### Flatten — Merge adjacent dimensions
+```python
+Flatten(graph, input, min_rank=int, max_rank=int)
+```
+**Shape rule:** Merges dimensions at rank positions `min_rank` through `max_rank` (counting from the right, 0-indexed) into a single dimension whose size is the product of the merged sizes.
+
+### Reshape — Split a dimension into two
+```python
+Reshape(graph, input, chunk_size=int, reshape_rank=int, write_back_mu=bool)
+```
+**Shape rule:** Splits dimension at `rank - reshape_rank` into `(ceil(dim/chunk_size), chunk_size)`.
+**Constraint:** If `reshape_rank != 0`, the dimension must be evenly divisible by `chunk_size`.
+
+---
+
+## Data Reuse Operators
+
+### Bufferize — Capture stream into on-chip ring buffer
+```python
+Bufferize(graph, input, rank=int, off_chip=False)
+```
+**Shape rule:** Output shape = `input.shape[:-rank]`. The last `rank` dimensions are absorbed into a Buffer.
+**Dtype change:** `Tile(r,c)` → `Buffer(buff_dtype=Tile(r,c), shape=input.shape[-rank:])`.
+**Constraint:** Input must be Tile dtype. `rank` must be >= 1.
+
+### Streamify — Read buffer back as a stream
+```python
+Streamify(graph, input, repeat_factor=[int, ...], rank=int, off_chip=False)
+```
+**Shape rule:** Output shape = `input.shape + tuple(repeat_factor) + buffer_shape`.
+**Dtype change:** `Buffer(Tile(r,c), shape=(...))` → `Tile(r,c)` (unwraps the buffer).
+**Constraint:** Input must be Buffer dtype (output of Bufferize).
+
+**CRITICAL — Bufferize/Streamify shape math:**
+
+The output of Streamify must match the shape of the other stream it will be paired with.
+
+```
+Input stream:  shape = (1, d0, d1, ..., dN)
+                                    ^^^^^^^ last `rank` dims
+Bufferize(rank=R):
+  Output:      shape = (1, d0, ..., d(N-R))
+               dtype = Buffer(Tile, shape=(d(N-R+1), ..., dN))
+
+Streamify(repeat_factor=[r0, r1, ...]):
+  Output:      shape = (1, d0, ..., d(N-R)) + (r0, r1, ...) + (d(N-R+1), ..., dN)
+               dtype = Tile (unwrapped)
+```
+
+To get the **same shape as the original stream**, use `repeat_factor=[]` (empty list).
+To **add new dimensions** for broadcasting, include them in `repeat_factor`.
+
+### Broadcast — Replicate stream for multiple consumers
+```python
+Broadcast(graph, input, num_consumers=int)
+```
+**Shape rule:** Each output has same shape as input. Access via `(broadcast, 0)`, `(broadcast, 1)`, etc.
+
+### Parallelize — Split stream across parallel consumers
+```python
+Parallelize(graph, input, parallelize_rank=int, num_consumers=int)
+```
+**Shape rule:** Divides outermost dimension by `num_consumers`. Each output: `(shape[0]//num_consumers,) + shape[1:]`.
+**Constraint:** `parallelize_rank == input.rank`. Outermost dim must be divisible by `num_consumers`.

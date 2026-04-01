@@ -346,6 +346,7 @@ def profile_and_collect(
     fixup_template_path: str | None = None,
     model_config_path: str | None = None,
     prompts_dir: Path | None = None,
+    max_fixup_attempts: int = 3,
 ):
     results = []
     for prop in proposals:
@@ -379,14 +380,13 @@ def profile_and_collect(
         )
 
         # --- Fix-up loop (retries until no build/syntax error) ---
-        MAX_FIXUP_ATTEMPTS = 3
         original_code = code
         fixup_attempted = False
         preamble_lc = _compute_preamble_line_count(
             base_spec["baseline_code"], base_spec.get("values"),
         )
         if fixup_template_path and model_config_path:
-            for fixup_round in range(MAX_FIXUP_ATTEMPTS):
+            for fixup_round in range(max_fixup_attempts):
                 metadata = kp.get("metadata", {})
                 has_build_error = metadata.get("build_error")
                 has_constraint = metadata.get("constraint_violations")
@@ -395,7 +395,7 @@ def profile_and_collect(
                 fixup_attempted = True
                 error_desc = format_errors_for_fixup(metadata, code=code, preamble_line_count=preamble_lc)
                 logger.info("[Fixup] Attempt %d/%d for %s: %s",
-                            fixup_round + 1, MAX_FIXUP_ATTEMPTS, name, error_desc[:200])
+                            fixup_round + 1, max_fixup_attempts, name, error_desc[:200])
                 fixed_code = _fixup_sync(
                     code, error_desc, case_config.system_prompt,
                     fixup_template_path, model_config_path,
@@ -489,6 +489,7 @@ async def process_single_service_plan(
     fixup_template_path: str | None = None,
     model_config_path: str | None = None,
     executor_experience_path: str | None = None,
+    max_fixup_attempts: int = 3,
 ):
     # Load executor experiences (successes + failures) if available
     executor_experiences_block = ""
@@ -528,7 +529,7 @@ async def process_single_service_plan(
                                         machine_config_path=machine_config_path, machine_config_preset=machine_config_preset,
                                         rel_tol=rel_tol,
                                         fixup_template_path=fixup_template_path, model_config_path=model_config_path,
-                                        prompts_dir=prompts_dir)
+                                        prompts_dir=prompts_dir, max_fixup_attempts=max_fixup_attempts)
 
     return results
 
@@ -632,7 +633,8 @@ async def main(args):
                                            prompts_dir=executor_prompts_dir,
                                            fixup_template_path=fixup_template_path,
                                            model_config_path=args.model_config_path,
-                                           executor_experience_path=getattr(args, 'executor_experience_path', None)),
+                                           executor_experience_path=getattr(args, 'executor_experience_path', None),
+                                           max_fixup_attempts=args.max_fixup_attempts),
                 timeout=7200
             )
 
@@ -713,6 +715,7 @@ if __name__ == "__main__":
     parser.add_argument("--per_profile_timeout", type=int, default=600)
     parser.add_argument("--include_baseline", action="store_true")
     parser.add_argument("--executor_experience_path", type=str, default=None)
+    parser.add_argument("--max_fixup_attempts", type=int, default=3)
     args = parser.parse_args()
 
     if args.log_file:
