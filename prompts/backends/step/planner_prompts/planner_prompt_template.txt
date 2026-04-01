@@ -15,11 +15,7 @@ You should follow the optimization plan guidance to come up with the optimizatio
 {problem_code}
 ```
 
-# Baseline STeP IR kernel
-```
-{kernel_code}
-```
-
+{baseline_context}
 # Profile
 ```
 {profile}

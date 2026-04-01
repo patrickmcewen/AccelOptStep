@@ -24,6 +24,7 @@ def run(
     machine_config_preset: str = "default",
     pipeline: str = "pytorch-step",
     stage_config: dict | None = None,
+    include_baseline: bool = False,
 ) -> None:
     from src.pipeline_registry import resolve_pipeline
     pipeline_cfg = resolve_pipeline(pipeline)
@@ -106,7 +107,26 @@ def run(
         planner_cmd += ["--machine_config_path", machine_config_path]
     if stage_config:
         planner_cmd += ["--stage_config", json.dumps(stage_config)]
+    if include_baseline:
+        planner_cmd += ["--include_baseline"]
     subprocess.run(planner_cmd, cwd=str(exp_dir), check=True)
+
+    # Construct executor experience from prior iteration's results
+    construct_executor_experience_exec = base_dir / "src" / "agents" / "construct_executor_experience.py"
+    prior_executor_results_path = exp_dir / "candidates" / "last_iteration_executor_results.json"
+    executor_experience_output_path = exp_dir / "rewrites" / "executor_experience.json"
+    if prior_executor_results_path.exists():
+        subprocess.run(
+            [
+                sys.executable, str(construct_executor_experience_exec),
+                "--executor_results_path", str(prior_executor_results_path),
+                "--output_path", str(executor_experience_output_path),
+                "--max_examples", "2",
+                "--log_file", str(log_file),
+            ],
+            cwd=str(exp_dir),
+            check=True,
+        )
 
     # Executor
     executor_exec = base_dir / "src" / "agents" / "executor.py"
@@ -134,6 +154,10 @@ def run(
         executor_cmd += ["--machine_config_path", machine_config_path]
     if stage_config:
         executor_cmd += ["--stage_config", json.dumps(stage_config)]
+    if include_baseline:
+        executor_cmd += ["--include_baseline"]
+    if executor_experience_output_path.exists():
+        executor_cmd += ["--executor_experience_path", str(executor_experience_output_path)]
     subprocess.run(
         executor_cmd,
         cwd=str(exp_dir),

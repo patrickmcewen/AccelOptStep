@@ -48,9 +48,10 @@ Before the final `return (graph, output_op)`, emit this checklist as a comment b
 # [ ] infer_broadcast(graph) called?
 # [ ] on_chip_bytes estimate within 32 MB?
 
+{preamble}
 Output ONLY the `build_graph` function wrapped in a code block.
-Do NOT include imports — they are provided externally.
-Dimension constants (M, K, N, etc.) are available as module-level variables.
+Do NOT include imports or constants — they are provided externally as module-level variables.
+Use the exact variable names shown in the preamble above.
 You MUST create input tensors inside `build_graph()` using `torch.randn()` with the dimension constants, e.g.:
 ```python
 def build_graph():

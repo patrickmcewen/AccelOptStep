@@ -25,6 +25,8 @@ OffChipLoad(
 
 **Stride convention:** `stride[i]` = number of tiles to advance in the underlying tensor when dimension `i` of `out_shape_tiled` increments by 1. Use `0` for broadcast dimensions (same data reused across that dimension).
 
+**CRITICAL:** `underlying` must be **at least 2D**. For scalars, use shape `(1, 1)` not `(1,)`.
+
 ### OffChipStore — Store tiles to HBM (sink, no output stream)
 ```python
 OffChipStore(graph, input, par_dispatch=int, store_file_name="output")

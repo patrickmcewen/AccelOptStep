@@ -1,0 +1,19 @@
+The following STeP IR kernel has errors that prevent it from compiling or passing constraint checks.
+
+## Generated Code
+```python
+{generated_code}
+```
+
+## Errors
+{error_list}
+
+Fix ONLY the errors listed above. Do not change the overall optimization strategy. Use the operator reference to guide your fixes:
+
+{operator_reference}
+
+Before each operator call, emit a shape annotation comment:
+# [op_name] in: (shape, dtype) -> out: (shape, dtype)
+
+Output ONLY the corrected `build_graph` function wrapped in a code block.
+Do NOT include imports, constants (M, K, N, SEED, etc.), or `compute_gold()`.

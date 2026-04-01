@@ -26,6 +26,8 @@ OffChipLoad(
 
 **Stride convention:** `stride[i]` = number of tiles to advance in the underlying tensor when dimension `i` of `out_shape_tiled` increments by 1. Use `0` for broadcast dimensions (same data reused across that dimension).
 
+**CRITICAL:** `underlying` must be **at least 2D**. The constructor indexes `underlying.shape[-2]` and `underlying.shape[-1]`. A 1D tensor (e.g. `torch.full((1,), ...)`) will cause `IndexError: tuple index out of range`. For scalars, use shape `(1, 1)`.
+
 **Example — GEMM input loading:**
 ```python
 # x is (M, K), tiled into (M//tm, N//tn, K//tk) for weight-stationary GEMM
@@ -37,6 +39,19 @@ x_load = OffChipLoad(
     tile_row=tile_m, tile_col=tile_k, par_dispatch=4,
 )
 # Stream: shape=(1, M//tm, N//tn, K//tk), dtype=Tile(tm, tk)
+```
+
+**Example — Scalar/constant loading (e.g. 1/sqrt(dim)):**
+```python
+# Scalar must be 2D: shape (1, 1), not (1,)
+scale_const = torch.full((1, 1), 1.0 / (dim ** 0.5), dtype=torch.float32)
+scale_load = OffChipLoad(
+    underlying=scale_const,
+    stride=(0,),
+    out_shape_tiled=(1,),
+    tile_row=1, tile_col=1, par_dispatch=1,
+)
+# Stream: shape=(1, 1), dtype=Tile(1, 1)
 ```
 
 ### OffChipStore — Store tiles to HBM (sink, no output stream)
@@ -304,4 +319,243 @@ If `filter_mask=True`, last dim becomes DynDim.
 - `init_fn.Empty(shape=(rows, cols), dtype=Float32())` — uninitialized (use when first write overwrites entirely)
 
 ---
+
+## Composition Patterns
+
+These are complete, verified patterns from real working STeP IR baselines.
+
+### Pattern 1 — Weight-Stationary GEMM (from gemm.py)
+
+Complete `build_graph()` for C = A @ B with inline shape annotations.
+
+```python
+def build_graph(dims):
+    M, K, N = dims["M"], dims["K"], dims["N"]
+    tile_m, tile_k, tile_n = 128, 128, 128
+    par_dispatch = 4
+    compute_bw = 4096
+
+    graph = MultiDiGraph()
+    A = torch.randn(M, K, dtype=torch.float32)
+    B = torch.randn(K, N, dtype=torch.float32)
+
+    # A is (M, K). Tiled stream iterates (M-tiles, N-tiles, K-tiles).
+    # stride: M-dim advances K//tile_k tiles, N-dim broadcast (0), K-dim advances 1.
+    a_load = OffChipLoad(
+        underlying=A,
+        stride=(K // tile_k, 0, 1),
+        out_shape_tiled=(M // tile_m, N // tile_n, K // tile_k),
+        tile_row=tile_m, tile_col=tile_k, par_dispatch=par_dispatch,
+    )
+    # a_load: shape=(1, M//128, N//128, K//128), tile=Tile(128, 128)
+
+    # B is (K, N). Same iteration order, different strides.
+    # stride: M-dim broadcast (0), N-dim advances 1, K-dim advances N//tile_n.
+    b_load = OffChipLoad(
+        underlying=B,
+        stride=(0, 1, N // tile_n),
+        out_shape_tiled=(M // tile_m, N // tile_n, K // tile_k),
+        tile_row=tile_k, tile_col=tile_n, par_dispatch=par_dispatch,
+    )
+    # b_load: shape=(1, M//128, N//128, K//128), tile=Tile(128, 128)
+
+    # Matmul: Tile(128,128) @ Tile(128,128) -> Tile(128,128), rank=1 reduces K-dim
+    matmul = BinaryMapAccum(
+        graph=graph, in1=a_load, in2=b_load,
+        fn=map_accum_fn.Matmul(),
+        init_fn=init_fn.Zero(shape=(tile_m, tile_n), dtype=Float32()),
+        rank=1, write_back_mu=True, compute_bw=compute_bw,
+    )
+    # matmul: shape=(1, M//128, N//128), tile=Tile(128, 128)
+
+    output_op = OffChipStore(graph=graph, input=matmul,
+                             par_dispatch=par_dispatch, store_file_name="output")
+    graph = infer_broadcast(graph)
+    return graph, output_op
 ```
+
+### Pattern 2 — On-chip Reuse via Bufferize/Streamify (from rmsnorm_matmul.py)
+
+The most common optimization pattern AND the biggest source of bugs.
+This shows chaining an intermediate result (normalized) into a matmul
+without storing it back to HBM, using Bufferize→Streamify→BinaryMapAccum.
+
+```python
+# Context: tile_m=64, tile_n=64, K=full width of row
+# normalized: shape=(1, M_tiles, 1), tile=Tile(tile_m, K)
+#   (each tile holds a full row of K elements)
+
+# Step 1: Bufferize — absorb the trailing dim (size 1) into on-chip buffer
+buff = Bufferize(graph, normalized, rank=1)
+# buff: shape=(1, M_tiles), dtype=Buffer(Tile(tile_m, K), shape=(1,))
+#   The last 1 dim was absorbed. Each buffer holds 1 tile of (tile_m, K).
+
+# Step 2: Streamify — replay for each N-tile column position
+norm_expanded = Streamify(graph, buff, repeat_factor=[N_tiles], rank=1)
+# norm_expanded: shape=(1, M_tiles, N_tiles, 1), tile=Tile(tile_m, K)
+#   Shape math: (M_tiles,) + (N_tiles,) + (1,) = (M_tiles, N_tiles, 1)
+#   The N_tiles repeat means each buffered tile is emitted N_tiles times.
+
+# Step 3: Load weights with matching shape
+w_load = OffChipLoad(
+    underlying=w_t,
+    stride=(0, 1, 0),
+    out_shape_tiled=(M_tiles, N_tiles, 1),  # K_tiles=1 (full K in one tile)
+    tile_row=K, tile_col=tile_n, par_dispatch=par_dispatch,
+)
+# w_load: shape=(1, M_tiles, N_tiles, 1), tile=Tile(K, tile_n)
+# CRITICAL: norm_expanded and w_load now have the same stream shape!
+
+# Step 4: Matmul — Tile(tile_m, K) @ Tile(K, tile_n) -> Tile(tile_m, tile_n)
+matmul = BinaryMapAccum(
+    graph=graph, in1=norm_expanded, in2=w_load,
+    fn=map_accum_fn.Matmul(),
+    init_fn=init_fn.Zero(shape=(tile_m, tile_n), dtype=Float32()),
+    rank=1, write_back_mu=True, compute_bw=2048,
+)
+# matmul: shape=(1, M_tiles, N_tiles), tile=Tile(tile_m, tile_n)
+```
+
+**Shape math recap:**
+```
+normalized           (M_tiles, 1)        Tile(tile_m, K)
+  -> Bufferize(rank=1)
+buff                 (M_tiles,)          Buffer(Tile(tile_m, K), shape=(1,))
+  -> Streamify(repeat_factor=[N_tiles], rank=1)
+norm_expanded        (M_tiles, N_tiles, 1)  Tile(tile_m, K)
+w_load               (M_tiles, N_tiles, 1)  Tile(K, tile_n)    <-- must match!
+  -> BinaryMapAccum(rank=1)
+matmul               (M_tiles, N_tiles)     Tile(tile_m, tile_n)
+```
+
+### Pattern 3 — Softmax with Broadcast (from bmm_softmax.py)
+
+Shows Broadcast→RowWiseSum→Div chain with compute_bw budget distribution.
+Full-N tiles mean the softmax row reduction stays within a single tile.
+
+```python
+# Context: tile_m=64, N=full width. Total compute_bw budget = 4096.
+# exp_x: shape=(1, B, M_tiles, 1), tile=Tile(tile_m, N)
+#   (after Exp on matmul output, compute_bw=512)
+
+# Broadcast to feed exp_x to both RowWiseSum and Div
+exp_bc = Broadcast(graph=graph, input=exp_x, num_consumers=2)
+# (exp_bc, 0) and (exp_bc, 1) each: shape=(1, B, M_tiles, 1), tile=Tile(tile_m, N)
+
+# RowWiseSum: reduce columns within each tile
+rowsum = UnaryMap(
+    graph=graph, input=(exp_bc, 1),
+    fn=map_fn.RowWiseSum(), write_back_mu=False, compute_bw=512,
+)
+# rowsum: shape=(1, B, M_tiles, 1), tile=Tile(tile_m, 1)
+
+# Div: each row divided by its sum (Tile broadcasts (tile_m,1) denom)
+softmax_out = BinaryMap(
+    graph=graph, in1=(exp_bc, 0), in2=rowsum,
+    fn=map_fn.Div(), write_back_mu=True, compute_bw=1024,
+)
+# softmax_out: shape=(1, B, M_tiles, 1), tile=Tile(tile_m, N)
+
+# Budget breakdown: matmul=2048 + exp=512 + rowsum=512 + div=1024 = 4096
+```
+
+---
+
+## Common Mistakes
+
+### Mistake 1 — Bufferize/Streamify shape mismatch
+
+Wrong `repeat_factor` producing a rank mismatch with the BinaryMapAccum partner.
+
+**WRONG:**
+```python
+# normalized: shape=(1, M_tiles, 1), tile=Tile(tile_m, K)
+buff = Bufferize(graph, normalized, rank=1)
+# buff: shape=(1, M_tiles), Buffer(Tile(tile_m, K), shape=(1,))
+
+norm_stream = Streamify(graph, buff, repeat_factor=[N_tiles, 1], rank=1)
+# norm_stream: shape=(1, M_tiles, N_tiles, 1, 1)  <-- RANK 4!
+# w_load:      shape=(1, M_tiles, N_tiles, 1)      <-- RANK 3
+# BinaryMapAccum FAILS: shapes (M_tiles, N_tiles, 1, 1) != (M_tiles, N_tiles, 1)
+```
+
+**RIGHT:**
+```python
+norm_stream = Streamify(graph, buff, repeat_factor=[N_tiles], rank=1)
+# norm_stream: shape=(1, M_tiles, N_tiles, 1)  <-- matches w_load
+```
+
+**Rule:** `repeat_factor` inserts new dims *between* the outer shape and the
+buffered shape. The resulting shape is `outer + repeat_factor + buffer_shape`.
+Only add repeat dims that actually correspond to iteration dimensions you need.
+
+### Mistake 2 — OffChipLoad strides producing mismatched shapes
+
+Both loads for a BinaryMapAccum must produce the same `out_shape_tiled`.
+A common error is using different `out_shape_tiled` values because the stride
+was computed for the wrong tiling.
+
+**WRONG:**
+```python
+# A is (M, K), B is (K, N). Want weight-stationary GEMM.
+a_load = OffChipLoad(
+    underlying=A,
+    stride=(K // tile_k, 0, 1),
+    out_shape_tiled=(M // tile_m, N // tile_n, K // tile_k),
+    tile_row=tile_m, tile_col=tile_k, par_dispatch=4,
+)
+# a_load: shape=(1, M//tm, N//tn, K//tk)
+
+b_load = OffChipLoad(
+    underlying=B,
+    stride=(0, 1, K // tile_k),          # <-- stride[2] wrong!
+    out_shape_tiled=(N // tile_n, K // tile_k),  # <-- shape wrong!
+    tile_row=tile_k, tile_col=tile_n, par_dispatch=4,
+)
+# b_load: shape=(1, N//tn, K//tk)  <-- RANK 2, doesn't match a_load's RANK 3
+```
+
+**RIGHT:**
+```python
+b_load = OffChipLoad(
+    underlying=B,
+    stride=(0, 1, N // tile_n),           # M-dim broadcast, N advances 1, K advances N//tn
+    out_shape_tiled=(M // tile_m, N // tile_n, K // tile_k),  # same shape as a_load
+    tile_row=tile_k, tile_col=tile_n, par_dispatch=4,
+)
+# b_load: shape=(1, M//tm, N//tn, K//tk)  <-- matches a_load
+```
+
+**Rule:** Both inputs to BinaryMapAccum must have identical `out_shape_tiled`.
+Use `stride=0` for broadcast dimensions where the same data is reused.
+
+### Mistake 3 — compute_bw budget overflow
+
+Each operator gets its own `compute_bw` allocation, but the total across all
+compute operators must not exceed {total_compute_bw} (typically 4096).
+
+**WRONG:**
+```python
+exp_x = UnaryMap(graph, input=matmul, fn=map_fn.Exp(),
+                 write_back_mu=False, compute_bw=4096)          # 4096
+rowsum = UnaryMap(graph, input=(exp_bc, 1), fn=map_fn.RowWiseSum(),
+                  write_back_mu=False, compute_bw=4096)         # + 4096
+softmax = BinaryMap(graph, in1=(exp_bc, 0), in2=rowsum,
+                    fn=map_fn.Div(), write_back_mu=True, compute_bw=4096)  # + 4096
+# Total = 12288 — EXCEEDS budget of 4096!
+```
+
+**RIGHT:**
+```python
+exp_x = UnaryMap(graph, input=matmul, fn=map_fn.Exp(),
+                 write_back_mu=False, compute_bw=512)           # 512
+rowsum = UnaryMap(graph, input=(exp_bc, 1), fn=map_fn.RowWiseSum(),
+                  write_back_mu=False, compute_bw=512)          # + 512
+softmax = BinaryMap(graph, in1=(exp_bc, 0), in2=rowsum,
+                    fn=map_fn.Div(), write_back_mu=True, compute_bw=1024)  # + 1024
+# Total = 2048 — leaves 2048 for matmul upstream. Full budget used.
+```
+
+**Rule:** Distribute the budget based on which operators are on the critical
+path. Matmul typically gets the largest share; lightweight ops (Exp, RowWiseSum)
+get less.

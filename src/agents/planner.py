@@ -24,6 +24,7 @@ class UserPromptConfig(BaseModel):
     displayed_profiles_path: str = ""
     breadth: int = 0
     machine_config: dict | None = None
+    include_baseline: bool = False
 
 class PlannerResponse(BaseModel):
     service_name: str
@@ -35,6 +36,16 @@ def construct_user_prompt(user_prompt_config: UserPromptConfig):
         prompt_template = f.read()
     user_prompt = prompt_template.replace("{problem_code}", user_prompt_config.problem_code)
     user_prompt = user_prompt.replace("{kernel_code}", user_prompt_config.kernel_code)
+    if user_prompt_config.include_baseline and user_prompt_config.kernel_code:
+        baseline_block = (
+            "# Baseline STeP IR kernel\n"
+            "```\n"
+            f"{user_prompt_config.kernel_code}\n"
+            "```\n"
+        )
+    else:
+        baseline_block = ""
+    user_prompt = user_prompt.replace("{baseline_context}", baseline_block)
     user_prompt = user_prompt.replace("{profile}", user_prompt_config.profile_str)
     if user_prompt_config.middleend_code:
         middleend_block = (
@@ -147,6 +158,7 @@ if __name__ == "__main__":
     parser.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
     parser.add_argument("--pipeline", type=str, default="pytorch-step")
     parser.add_argument("--stage_config", type=str, default=None, help="JSON dict of pipeline overrides for multi-stage execution")
+    parser.add_argument("--include_baseline", action="store_true", help="Include baseline kernel code in prompts")
     args = parser.parse_args()
 
     if args.log_file:
@@ -235,6 +247,7 @@ if __name__ == "__main__":
                 breadth=breadth,
                 displayed_profiles_path=displayed_profiles_path,
                 machine_config=mc,
+                include_baseline=args.include_baseline,
             ),
             "record_data": row_data,
             "prompts_dir": planner_prompts_dir,

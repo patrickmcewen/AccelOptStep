@@ -31,7 +31,7 @@ from rewrite.broadcast import infer_broadcast
 - `UnaryMap(fn)` — element-wise unary op (Silu, Exp, RowWiseSum)
 - `BinaryMapAccum(fn, init_fn, rank)` — fused map-accumulate (GEMM). Removes last `rank` dims.
 - `Accum(fn, init_fn, accum_rank)` — reduction. Removes last `accum_rank` dims.
-- `Bufferize(rank)` / `Streamify(repeat_factor, rank)` — on-chip data reuse. See operator reference for shape rules.
+- `Bufferize(rank)` / `Streamify(repeat_factor, rank)` — on-chip data reuse. See operator reference for shape rules. **Do NOT wrap inputs to `BinaryMapAccum` in Bufferize/Streamify** — it already streams tile-by-tile for the reduction. Use Bufferize/Streamify only for fan-out reuse (same data consumed by multiple different operators).
 - `Broadcast(num_consumers)` — replicate stream. Access: `(broadcast, 0)`.
 - `Promote(promote_rank)` — insert size-1 dimension.
 - `ExpandRef(ref, expand_rank)` — expand size-1 dims to match reference.
@@ -41,7 +41,7 @@ from rewrite.broadcast import infer_broadcast
 
 ## Rules
 1. Every graph must have at least one OffChipLoad and one OffChipStore.
-2. Use `write_back_mu=False` for intermediate results to avoid unnecessary HBM round-trips.
+2. Use `write_back_mu=False` for intermediate results to avoid unnecessary HBM round-trips. Use `write_back_mu=True` on the **last compute node** whose output feeds directly into `OffChipStore`.
 3. Tile dimensions must evenly divide tensor dimensions (or pad).
 4. `build_graph()` must return `(graph, final_store_op)`.
 5. Do not use float16 unless the baseline uses it.

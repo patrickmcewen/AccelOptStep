@@ -82,6 +82,7 @@ def _run_stage(
     stage_config: dict | None = None,
     _resume_last_exp_date: str | None = None,
     _resume_remaining_iters: int | None = None,
+    include_baseline: bool = False,
 ) -> str:
     """Run one stage of the experiment loop (first iteration + N subsequent).
 
@@ -135,6 +136,7 @@ def _run_stage(
             machine_config_preset=machine_config_preset,
             pipeline=pipeline,
             stage_config=stage_config,
+            include_baseline=include_baseline,
         )
 
         last_exp_date = init_exp_date
@@ -195,6 +197,7 @@ def _run_stage(
             machine_config_preset=machine_config_preset,
             pipeline=pipeline,
             stage_config=stage_config,
+            include_baseline=include_baseline,
         )
 
         last_exp_date = current_exp_date
@@ -209,7 +212,7 @@ def _extract_best_kernel_path(exp_base_dir: Path, last_exp_date: str, speedup_me
     """
     candidates_dir = exp_base_dir / last_exp_date / "candidates"
     profile_csv = candidates_dir / "profile_results.csv"
-    if not profile_csv.exists():
+    if not profile_csv.exists() or profile_csv.stat().st_size == 0:
         return None
 
     df = pd.read_csv(profile_csv)
@@ -299,6 +302,7 @@ def run(
     pipeline: str = "pytorch-step",
     middleend_iters: int | None = None,
     resume: bool = False,
+    include_baseline: bool = False,
 ) -> None:
     setup_problem_logger(log_file)
     from src.pipeline_registry import resolve_pipeline, get_stage_configs
@@ -325,6 +329,7 @@ def run(
         log_file=log_file,
         machine_config_preset=machine_config_preset,
         pipeline=pipeline,
+        include_baseline=include_baseline,
     )
 
     if resume:
@@ -634,6 +639,7 @@ if __name__ == "__main__":
     parser.add_argument("--pipeline", type=str, default="pytorch-step")
     parser.add_argument("--middleend_iters", type=int, default=None)
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in log.txt")
+    parser.add_argument("--include_baseline", action="store_true", help="Include baseline kernel code in prompts")
     args = parser.parse_args()
 
     run(
@@ -658,4 +664,5 @@ if __name__ == "__main__":
         pipeline=args.pipeline,
         middleend_iters=args.middleend_iters,
         resume=args.resume,
+        include_baseline=args.include_baseline,
     )

@@ -26,6 +26,8 @@ OffChipLoad(
 
 **Stride convention:** `stride[i]` = number of tiles to advance in the underlying tensor when dimension `i` of `out_shape_tiled` increments by 1. Use `0` for broadcast dimensions (same data reused across that dimension).
 
+**CRITICAL:** `underlying` must be **at least 2D**. The constructor indexes `underlying.shape[-2]` and `underlying.shape[-1]`. A 1D tensor (e.g. `torch.full((1,), ...)`) will cause `IndexError: tuple index out of range`. For scalars, use shape `(1, 1)`.
+
 **Example — GEMM input loading:**
 ```python
 # x is (M, K), tiled into (M//tm, N//tn, K//tk) for weight-stationary GEMM
@@ -37,6 +39,19 @@ x_load = OffChipLoad(
     tile_row=tile_m, tile_col=tile_k, par_dispatch=4,
 )
 # Stream: shape=(1, M//tm, N//tn, K//tk), dtype=Tile(tm, tk)
+```
+
+**Example — Scalar/constant loading (e.g. 1/sqrt(dim)):**
+```python
+# Scalar must be 2D: shape (1, 1), not (1,)
+scale_const = torch.full((1, 1), 1.0 / (dim ** 0.5), dtype=torch.float32)
+scale_load = OffChipLoad(
+    underlying=scale_const,
+    stride=(0,),
+    out_shape_tiled=(1,),
+    tile_row=1, tile_col=1, par_dispatch=1,
+)
+# Stream: shape=(1, 1), dtype=Tile(1, 1)
 ```
 
 ### OffChipStore — Store tiles to HBM (sink, no output stream)

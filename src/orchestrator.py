@@ -80,6 +80,7 @@ def scaffold_experiments(script_dir: Path, checkpoint_dir: Path, configs_dir: Pa
     org_name = cfg["org_name"]
     logfire_enabled = cfg.get("logfire_enabled", True)
     middleend_iters = cfg.get("middleend_iters")
+    include_baseline = cfg.get("include_baseline", False)
 
     print()
     print(">>> Scaffolding experiment directories...")
@@ -133,6 +134,7 @@ def scaffold_experiments(script_dir: Path, checkpoint_dir: Path, configs_dir: Pa
             machine_config_preset=machine_config_preset,
             pipeline=pipeline,
             middleend_iters=middleend_iters,
+            include_baseline=include_baseline,
         )
         problem_configs.append((service_name, loop_kwargs))
 
@@ -307,6 +309,7 @@ def resume_experiment(checkpoint_dir: Path, cfg: dict, script_dir: Path,
             pipeline=pipeline_str,
             middleend_iters=middleend_iters,
             resume=True,
+            include_baseline=cfg.get("include_baseline", False),
         )
         problem_configs.append((service_name, loop_kwargs))
 

@@ -112,21 +112,26 @@ def run(
     # Profile candidates
     start_time = _timestamp()
 
-    sequential_profile_exec = base_dir / "src" / "agents" / "sequential_profile.py"
     candidates_path = exp_dir / "candidates" / "candidates.csv"
     profile_output_path = exp_dir / "candidates" / "profile_results.csv"
-    subprocess.run(
-        [
-            sys.executable, str(sequential_profile_exec),
-            "--candidates_path", str(candidates_path),
-            "--output_path", str(profile_output_path),
-            "--profile_mode", profile_mode,
-            "--rel_tol", str(rel_tol),
-            "--log_file", str(log_file),
-        ],
-        cwd=str(exp_dir),
-        check=True,
-    )
+
+    if candidates_path.stat().st_size == 0:
+        print("WARNING: candidates.csv is empty (0 optimization items produced), skipping profiling")
+        profile_output_path.write_text("")
+    else:
+        sequential_profile_exec = base_dir / "src" / "agents" / "sequential_profile.py"
+        subprocess.run(
+            [
+                sys.executable, str(sequential_profile_exec),
+                "--candidates_path", str(candidates_path),
+                "--output_path", str(profile_output_path),
+                "--profile_mode", profile_mode,
+                "--rel_tol", str(rel_tol),
+                "--log_file", str(log_file),
+            ],
+            cwd=str(exp_dir),
+            check=True,
+        )
 
     end_time = _timestamp()
     with open(exp_dir / "profile_candidates_start_end_time.txt", "a") as f:

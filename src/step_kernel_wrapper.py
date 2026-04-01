@@ -4,6 +4,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import traceback
 from enum import Enum
 
 import yaml
@@ -107,11 +108,25 @@ class StepKernel:
         props = StepKernelProperties()
 
         # Step 1: Execute the generated code to get the graph
-        mod, graph, output_op = self._execute_step_code()
+        try:
+            mod, graph, output_op = self._execute_step_code()
+        except Exception as e:
+            props.metadata["build_error"] = str(e)
+            props.metadata["build_error_traceback"] = traceback.format_exc()
+            return props
+
         assert graph is not None, "build_graph() returned None for graph"
         assert output_op is not None, "build_graph() returned None for output_op"
         props.compiled = True
         props.runnable = True
+
+        # Step 1.5: Check graph constraints before expensive profiling
+        from src.step_graph_checker import check_step_graph
+        violations = check_step_graph(graph, output_op, self.total_compute_bw, self.on_chip_memory_bytes)
+        if violations:
+            props.compiled = False
+            props.metadata["constraint_violations"] = violations
+            return props
 
         # Step 2: Symbolic profiling (always — gives memory traffic estimates for LLM feedback)
         symbolic_metrics = self._symbolic_profile(graph)

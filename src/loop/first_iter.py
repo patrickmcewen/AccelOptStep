@@ -24,6 +24,7 @@ def run(
     machine_config_preset: str = "default",
     pipeline: str = "pytorch-step",
     stage_config: dict | None = None,
+    include_baseline: bool = False,
 ) -> None:
     from src.pipeline_registry import resolve_pipeline
     pipeline_cfg = resolve_pipeline(pipeline)
@@ -107,6 +108,8 @@ def run(
         planner_cmd += ["--machine_config_path", machine_config_path]
     if stage_config:
         planner_cmd += ["--stage_config", json.dumps(stage_config)]
+    if include_baseline:
+        planner_cmd += ["--include_baseline"]
     subprocess.run(planner_cmd, cwd=str(exp_dir), check=True)
 
     # Executor
@@ -135,6 +138,8 @@ def run(
         executor_cmd += ["--machine_config_path", machine_config_path]
     if stage_config:
         executor_cmd += ["--stage_config", json.dumps(stage_config)]
+    if include_baseline:
+        executor_cmd += ["--include_baseline"]
     subprocess.run(
         executor_cmd,
         cwd=str(exp_dir),

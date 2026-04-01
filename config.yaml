@@ -23,6 +23,7 @@ defaults:
   max_threshold: 1.04  # minimum speedup to count as positive (4%)
   min_threshold: 1.15  # speedup for "strong positive" (15%)
   rel_tol: 2.0e-5
+  include_baseline: false # include baseline kernel code in planner/executor prompts
   benchmarks: all         # 'all' or list of names from bench_config.yaml, e.g. [gemm, sdpa]
   presets: all            # 'all' or list of preset names, e.g. [small, square]
   dry_run: false
@@ -252,6 +253,62 @@ pytorch_nki_all_small:
   pipeline: pytorch-nki
   bench_dir: StepBench
   benchmarks: all
+  presets: [small]
+  iters: 3
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+
+pytorch_step_nki_some_small:
+  pipeline: pytorch-step-nki
+  bench_dir: StepBench
+  benchmarks: [gemm, mlp, sdpa, moe, minigpt_block]
+  presets: [small]
+  iters: 3
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+
+pytorch_nki_some_small:
+  pipeline: pytorch-nki
+  bench_dir: StepBench
+  benchmarks: [gemm, mlp, sdpa, moe, minigpt_block]
+  presets: [small]
+  iters: 3
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+
+pytorch_step_some_small:
+  pipeline: pytorch-step
+  bench_dir: StepBench
+  benchmarks: [sdpa, moe]
+  presets: [small]
+  iters: 3
+  breadth: 2
+  num_samples: 1
+  topk_candidates: 2
+  topk: 2
+  exp_n: 2
+  max_threshold: 1.01
+  min_threshold: 1.01
+
+pytorch_step_gemm_small:
+  pipeline: pytorch-step
+  bench_dir: StepBench
+  benchmarks: [gemm]
   presets: [small]
   iters: 3
   breadth: 2

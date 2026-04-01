@@ -4,3 +4,6 @@
 [submodule "flashinfer-bench"]
 	path = flashinfer-bench
 	url = https://github.com/flashinfer-ai/flashinfer-bench.git
+[submodule "PCL-lite"]
+	path = PCL-lite
+	url = https://github.com/zhang677/PCL-lite.git
