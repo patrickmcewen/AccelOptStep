@@ -1,7 +1,5 @@
 """Run a non-first iteration of the experiment loop (has prior rewrites)."""
 
-import argparse
-import json
 import os
 import subprocess
 import sys
@@ -16,22 +14,17 @@ def run(
     breadth: int,
     num_samples: int,
     exp_n: int,
+    rel_tol: float,
     project_name: str,
     org_name: str,
     logfire_enabled: bool = True,
     log_file: Path = None,
-    machine_config_path: str | None = None,
+    machine_config_path: str = None,
     machine_config_preset: str = "default",
-    pipeline: str = "pytorch-step",
-    stage_config: dict | None = None,
     include_baseline: bool = False,
 ) -> None:
-    from src.pipeline_registry import resolve_pipeline
-    pipeline_cfg = resolve_pipeline(pipeline)
-    if stage_config:
-        pipeline_cfg = {**pipeline_cfg, **stage_config}
     base_dir = Path(os.environ["ACCELOPT_BASE_DIR"])
-    prompts_base = base_dir / "prompts" / pipeline_cfg["prompts_subdir"]
+    prompts_base = base_dir / "prompts"
     exp_dir = exp_base_dir / exp_date
 
     assert exp_dir.exists(), f"Experiment directory does not exist: {exp_dir}"
@@ -101,12 +94,9 @@ def run(
         "--displayed_profiles_path", str(planner_displayed_profiles_path),
         "--log_file", str(log_file),
         "--machine_config_preset", machine_config_preset,
-        "--pipeline", pipeline,
     ]
     if machine_config_path:
         planner_cmd += ["--machine_config_path", machine_config_path]
-    if stage_config:
-        planner_cmd += ["--stage_config", json.dumps(stage_config)]
     if include_baseline:
         planner_cmd += ["--include_baseline"]
     subprocess.run(planner_cmd, cwd=str(exp_dir), check=True)
@@ -148,12 +138,10 @@ def run(
         "--exp_date", exp_date,
         "--log_file", str(log_file),
         "--machine_config_preset", machine_config_preset,
-        "--pipeline", pipeline,
+        "--rel_tol", str(rel_tol),
     ]
     if machine_config_path:
         executor_cmd += ["--machine_config_path", machine_config_path]
-    if stage_config:
-        executor_cmd += ["--stage_config", json.dumps(stage_config)]
     if include_baseline:
         executor_cmd += ["--include_baseline"]
     if executor_experience_output_path.exists():
@@ -162,32 +150,4 @@ def run(
         executor_cmd,
         cwd=str(exp_dir),
         check=True,
-    )
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run non-first iteration of experiment loop")
-    parser.add_argument("exp_date", type=str)
-    parser.add_argument("exp_base_dir", type=Path)
-    parser.add_argument("experience_list_path", type=Path)
-    parser.add_argument("profile_mode", type=str)
-    parser.add_argument("breadth", type=int)
-    parser.add_argument("num_samples", type=int)
-    parser.add_argument("exp_n", type=int)
-    parser.add_argument("project_name", type=str)
-    parser.add_argument("org_name", type=str)
-    parser.add_argument("log_file", type=Path)
-    args = parser.parse_args()
-
-    run(
-        exp_date=args.exp_date,
-        exp_base_dir=args.exp_base_dir,
-        experience_list_path=args.experience_list_path,
-        profile_mode=args.profile_mode,
-        breadth=args.breadth,
-        num_samples=args.num_samples,
-        exp_n=args.exp_n,
-        project_name=args.project_name,
-        org_name=args.org_name,
-        log_file=args.log_file,
     )

@@ -17,9 +17,8 @@ LA = ZoneInfo("America/Los_Angeles")
 
 
 def generate_profile_csv(script_dir: Path, output_dir: Path, profile_mode: str, cfg: dict,
-                         machine_config_path: str | None = None, machine_config_preset: str = "default",
-                         pipeline: str = "pytorch-step"):
-    """Step 1: Generate candidates.csv and profile_results.csv into output_dir (run-local)."""
+                         machine_config_path: str = None, machine_config_preset: str = "default"):
+    """Step 1: Generate candidates.csv and profile_results.csv into output_dir."""
 
     candidates_csv = output_dir / "candidates.csv"
     profile_csv = output_dir / "profile_results.csv"
@@ -33,11 +32,9 @@ def generate_profile_csv(script_dir: Path, output_dir: Path, profile_mode: str, 
         "--output_profile_path", str(profile_csv),
         "--profile_mode", profile_mode,
         "--mode", "construct",
+        "--machine_config_path", machine_config_path,
+        "--machine_config_preset", machine_config_preset,
     ]
-    if machine_config_path:
-        cmd += ["--machine_config_path", machine_config_path]
-    cmd += ["--machine_config_preset", machine_config_preset]
-    cmd += ["--pipeline", pipeline]
     bench_dir = cfg.get("bench_dir")
     if bench_dir:
         cmd += ["--bench_dir", bench_dir]
@@ -57,15 +54,8 @@ def generate_profile_csv(script_dir: Path, output_dir: Path, profile_mode: str, 
 
 
 def scaffold_experiments(script_dir: Path, checkpoint_dir: Path, configs_dir: Path, cfg: dict, exp_date_base: str,
-                         machine_config_path: str | None = None, machine_config_preset: str = "default",
-                         pipeline: str = "pytorch-step"):
-    """Step 2: Scaffold experiment directories.
-
-    Args:
-        checkpoint_dir: The run-local checkpoint directory containing candidates.csv
-                        and profile_results.csv (already created by generate_profile_csv).
-        configs_dir: Path to the shared configs directory to copy into each problem dir.
-    """
+                         machine_config_path: str = None, machine_config_preset: str = "default"):
+    """Step 2: Scaffold experiment directories."""
     iters = cfg["iters"]
     breadth = cfg["breadth"]
     num_samples = cfg["num_samples"]
@@ -79,7 +69,6 @@ def scaffold_experiments(script_dir: Path, checkpoint_dir: Path, configs_dir: Pa
     project_name = cfg["project_name"]
     org_name = cfg["org_name"]
     logfire_enabled = cfg.get("logfire_enabled", True)
-    middleend_iters = cfg.get("middleend_iters")
     include_baseline = cfg.get("include_baseline", False)
 
     print()
@@ -132,8 +121,6 @@ def scaffold_experiments(script_dir: Path, checkpoint_dir: Path, configs_dir: Pa
             log_file=debug_log_path,
             machine_config_path=machine_config_path,
             machine_config_preset=machine_config_preset,
-            pipeline=pipeline,
-            middleend_iters=middleend_iters,
             include_baseline=include_baseline,
         )
         problem_configs.append((service_name, loop_kwargs))
@@ -170,7 +157,7 @@ def _tee_to_log(log_path: Path, fn, *args, **kwargs):
     """Run fn() while teeing all stdout/stderr (including subprocess output) to log_path."""
     log_f = open(log_path, "w")
     read_fd, write_fd = os.pipe()
-    # Increase pipe buffer to avoid BrokenPipeError from high-volume subprocess output (e.g. NKI)
+    # Increase pipe buffer to avoid BrokenPipeError from high-volume subprocess output
     import fcntl
     F_SETPIPE_SZ = 1031
     fcntl.fcntl(write_fd, F_SETPIPE_SZ, 1048576)  # 1MB
@@ -257,11 +244,8 @@ def launch_loops(checkpoint_dir: Path, problem_configs: list, dry_run: bool):
 
 
 def resume_experiment(checkpoint_dir: Path, cfg: dict, script_dir: Path,
-                      machine_config_path: str | None, machine_config_preset: str,
-                      pipeline_str: str):
+                      machine_config_path: str = None, machine_config_preset: str = "default"):
     """Resume an interrupted experiment from an existing checkpoint directory."""
-    exp_date_base = checkpoint_dir.name
-
     # Discover problem directories (those with log.txt)
     problem_dirs = sorted(
         d for d in checkpoint_dir.iterdir()
@@ -270,7 +254,6 @@ def resume_experiment(checkpoint_dir: Path, cfg: dict, script_dir: Path,
     assert problem_dirs, f"No problem directories with log.txt found in {checkpoint_dir}"
 
     iters = cfg["iters"]
-    middleend_iters = cfg.get("middleend_iters")
 
     problem_configs = []
     for problem_dir in problem_dirs:
@@ -279,9 +262,8 @@ def resume_experiment(checkpoint_dir: Path, cfg: dict, script_dir: Path,
         assert log_entries, f"log.txt is empty for {service_name}"
 
         # Reconstruct init_exp_date and exp_date_prefix from first log entry
+        exp_date_base = checkpoint_dir.name
         first_entry = log_entries[0]
-        # first_entry format: eval-{index}-{exp_date_base}-{MM-DD-HH-MM}
-        # exp_date_prefix is: eval-{index}-{exp_date_base}
         prefix_before_base = first_entry.split(f"-{exp_date_base}")[0]
         exp_date_prefix = f"{prefix_before_base}-{exp_date_base}"
 
@@ -306,8 +288,6 @@ def resume_experiment(checkpoint_dir: Path, cfg: dict, script_dir: Path,
             log_file=debug_log_path,
             machine_config_path=machine_config_path,
             machine_config_preset=machine_config_preset,
-            pipeline=pipeline_str,
-            middleend_iters=middleend_iters,
             resume=True,
             include_baseline=cfg.get("include_baseline", False),
         )

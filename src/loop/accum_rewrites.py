@@ -1,7 +1,5 @@
 """Run rewrites selection, candidate selection, and profiling."""
 
-import argparse
-import json
 import os
 import subprocess
 import sys
@@ -26,17 +24,12 @@ def run(
     org_name: str,
     logfire_enabled: bool = True,
     log_file: Path = None,
-    machine_config_path: str | None = None,
+    machine_config_path: str = None,
     machine_config_preset: str = "default",
-    pipeline: str = "pytorch-step",
-    stage_config: dict | None = None,
+    include_baseline: bool = False,
 ) -> None:
-    from src.pipeline_registry import resolve_pipeline
-    pipeline_cfg = resolve_pipeline(pipeline)
-    if stage_config:
-        pipeline_cfg = {**pipeline_cfg, **stage_config}
     base_dir = Path(os.environ["ACCELOPT_BASE_DIR"])
-    prompts_base = base_dir / "prompts" / pipeline_cfg["prompts_subdir"]
+    prompts_base = base_dir / "prompts"
     exp_dir = exp_base_dir / exp_date
 
     assert exp_dir.exists(), f"Experiment directory does not exist: {exp_dir}"
@@ -64,7 +57,7 @@ def run(
     output_list_path = exp_dir / "rewrites" / "rewrites_selection_output_list.json"
     output_speedups_path = exp_dir / "rewrites" / "rewrites_selection_output_speedups.json"
     output_plan_ids_path = exp_dir / "rewrites" / "rewrites_selection_output_plan_ids.json"
-    model_config_path = exp_base_dir / "configs" / "summarizer_config.json"
+    model_config_path_summarizer = exp_base_dir / "configs" / "summarizer_config.json"
     subprocess.run(
         [
             sys.executable, str(rewrites_selection_exec),
@@ -77,7 +70,7 @@ def run(
             "--topk", str(topk),
             "--output_plan_ids_path", str(output_plan_ids_path),
             "--output_speedups_path", str(output_speedups_path),
-            "--model_config_path", str(model_config_path),
+            "--model_config_path", str(model_config_path_summarizer),
             "--log_file", str(log_file),
         ],
         cwd=str(exp_dir),
@@ -99,10 +92,7 @@ def run(
         "--output_base_path", str(output_base_path),
         "--topk", str(topk_candidates),
         "--log_file", str(log_file),
-        "--pipeline", pipeline,
     ]
-    if stage_config:
-        select_cmd += ["--stage_config", json.dumps(stage_config)]
     subprocess.run(select_cmd, cwd=str(exp_dir), check=True)
 
     end_time = _timestamp()
@@ -136,33 +126,3 @@ def run(
     end_time = _timestamp()
     with open(exp_dir / "profile_candidates_start_end_time.txt", "a") as f:
         f.write(f"{start_time},{end_time}\n")
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run rewrites selection, candidate selection, and profiling")
-    parser.add_argument("exp_date", type=str)
-    parser.add_argument("exp_base_dir", type=Path)
-    parser.add_argument("profile_mode", type=str)
-    parser.add_argument("max_threshold", type=float)
-    parser.add_argument("min_threshold", type=float)
-    parser.add_argument("topk", type=int)
-    parser.add_argument("topk_candidates", type=int)
-    parser.add_argument("project_name", type=str)
-    parser.add_argument("rel_tol", type=float)
-    parser.add_argument("org_name", type=str)
-    parser.add_argument("log_file", type=Path)
-    args = parser.parse_args()
-
-    run(
-        exp_date=args.exp_date,
-        exp_base_dir=args.exp_base_dir,
-        profile_mode=args.profile_mode,
-        max_threshold=args.max_threshold,
-        min_threshold=args.min_threshold,
-        topk=args.topk,
-        topk_candidates=args.topk_candidates,
-        project_name=args.project_name,
-        rel_tol=args.rel_tol,
-        org_name=args.org_name,
-        log_file=args.log_file,
-    )

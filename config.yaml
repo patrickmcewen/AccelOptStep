@@ -1,7 +1,7 @@
 # =============================================================================
-# AccelOptStep experiment configurations
+# AccelOptStep experiment configurations (pytorch-step pipeline)
 # =============================================================================
-# Usage:  python run_experiment.py --config config.yaml --preset <name>
+# Usage:  python run_experiment.py --config <preset_name>
 #
 # Each top-level key is a named preset. Keys not specified in a preset
 # fall back to the defaults below.
@@ -11,7 +11,6 @@ defaults:
   project_name: combined-flow
   org_name: pmcewen
   profile_mode: cycle_accurate
-  pipeline: pytorch-step        # valid values: pytorch-step, numpy-nki, pytorch-nki, numpy-step, pytorch-step-nki
   # step_artifact_src: /absolute/path/to/step_artifact/src
   # exp_date_base: auto-generated as YYYY-MM-DD-HHMMSS if omitted
   iters: 15            # optimization iterations after the first
@@ -23,13 +22,12 @@ defaults:
   max_threshold: 1.04  # minimum speedup to count as positive (4%)
   min_threshold: 1.15  # speedup for "strong positive" (15%)
   rel_tol: 2.0e-5
-  include_baseline: false # include baseline kernel code in planner/executor prompts
-  benchmarks: all         # 'all' or list of names from bench_config.yaml, e.g. [gemm, sdpa]
+  include_baseline: false
+  benchmarks: all         # 'all' or list of names from StepBench, e.g. [gemm, sdpa]
   presets: all            # 'all' or list of preset names, e.g. [small, square]
   dry_run: false
-  logfire_enabled: true   # set to false to skip logfire setup (useful for local/test runs)
+  logfire_enabled: true
   machine_config: default
-  middleend_iters: null    # if set, Stage 1 (middleend) uses this many iters; Stage 2 uses 'iters'
   per_profile_timeout: 3600
 
 # --- Presets ---
@@ -60,7 +58,7 @@ pytorch_step_other_benchmarks:
   max_threshold: 1.01
   min_threshold: 1.01
   benchmarks: [moe, sdpa]
-  presets: [default] 
+  presets: [default]
 
 test_small_scale_sdpa:
   project_name: pytorch-step
@@ -113,12 +111,10 @@ sdpa_only:
   benchmarks: [sdpa]
   presets: [small]
 
-# Example: run only GEMM square preset
 gemm_only:
   benchmarks: [gemm]
   presets: [square]
 
-# Example: run all baselines at small size for quick validation
 smoke_test:
   benchmarks: all
   presets: [small]
@@ -127,173 +123,7 @@ smoke_test:
   num_samples: 1
   dry_run: true
 
-# NKI presets
-nki_full_run:
-  pipeline: numpy-nki
-  profile_mode: cycle_accurate
-  benchmarks: all
-  presets: all
-
-nki_test_small:
-  pipeline: numpy-nki
-  iters: 3
-  breadth: 2
-  num_samples: 1
-  topk_candidates: 2
-  topk: 2
-  exp_n: 2
-  max_threshold: 1.01
-  min_threshold: 1.01
-  benchmarks: [matmul, rmsnorm_matmul, silu]
-  presets: all
-
-nki_smoke_test:
-  pipeline: numpy-nki
-  benchmarks: all
-  presets: all
-  iters: 1
-  breadth: 1
-  num_samples: 1
-  dry_run: true
-
-# Cross-pipeline presets
-pytorch_nki_smoke_test:
-  pipeline: pytorch-nki
-  benchmarks: all
-  presets: [default]     # NKIBench only has 'default' presets, not 'small'
-  iters: 1
-  breadth: 1
-  num_samples: 1
-  dry_run: true
-
-numpy_step_smoke_test:
-  pipeline: numpy-step
-  benchmarks: all
-  presets: all
-  iters: 1
-  breadth: 1
-  num_samples: 1
-  dry_run: true
-
-# Multi-stage pipeline presets
-pytorch_step_nki_smoke_test:
-  pipeline: pytorch-step-nki
-  benchmarks: all
-  presets: [default]     # NKIBench only has 'default' presets, not 'small'
-  iters: 1
-  breadth: 1
-  num_samples: 1
-  dry_run: true
-
-
-pytorch_step_nki_small:
-  pipeline: pytorch-step-nki
-  benchmarks: [matmul, silu, rmsnorm_matmul]
-  presets: [default]     # NKIBench only has 'default' presets
-  iters: 2
-  breadth: 2
-  num_samples: 2
-
-numpy_step_nki_small:
-  pipeline: numpy-step-nki
-  iters: 3
-  breadth: 2
-  num_samples: 1
-  topk_candidates: 2
-  topk: 2
-  exp_n: 2
-  max_threshold: 1.01
-  min_threshold: 1.01
-  benchmarks: [matmul_add_rmsnorm, rope_single_freq_apply, gqa_full]
-  middleend_iters: 1
-  presets: [default]
-
-numpy_nki_small:
-  pipeline: numpy-nki
-  iters: 1
-  breadth: 2
-  num_samples: 1
-  topk_candidates: 2
-  topk: 2
-  exp_n: 2
-  max_threshold: 1.01
-  min_threshold: 1.01
-  benchmarks: [matmul_add_rmsnorm, rope_single_freq_apply, gqa_full]
-  presets: [default]
-
-numpy_step_matmul_add_rmsnorm:
-  pipeline: numpy-step
-  bench_dir: NKIBench
-  iters: 3
-  breadth: 2
-  num_samples: 1
-  topk_candidates: 2
-  topk: 2
-  exp_n: 2
-  max_threshold: 1.01
-  min_threshold: 1.01
-  benchmarks: [matmul_add_rmsnorm]
-  presets: [default]
-
-pytorch_step_nki_all_small:
-  pipeline: pytorch-step-nki
-  bench_dir: StepBench
-  benchmarks: all
-  presets: [small]
-  iters: 3
-  breadth: 2
-  num_samples: 1
-  topk_candidates: 2
-  topk: 2
-  exp_n: 2
-  max_threshold: 1.01
-  min_threshold: 1.01
-
-pytorch_nki_all_small:
-  pipeline: pytorch-nki
-  bench_dir: StepBench
-  benchmarks: all
-  presets: [small]
-  iters: 3
-  breadth: 2
-  num_samples: 1
-  topk_candidates: 2
-  topk: 2
-  exp_n: 2
-  max_threshold: 1.01
-  min_threshold: 1.01
-
-pytorch_step_nki_some_small:
-  pipeline: pytorch-step-nki
-  bench_dir: StepBench
-  benchmarks: [gemm, mlp, sdpa, moe, minigpt_block]
-  presets: [small]
-  iters: 3
-  breadth: 2
-  num_samples: 1
-  topk_candidates: 2
-  topk: 2
-  exp_n: 2
-  max_threshold: 1.01
-  min_threshold: 1.01
-
-pytorch_nki_some_small:
-  pipeline: pytorch-nki
-  bench_dir: StepBench
-  benchmarks: [gemm, mlp, sdpa, moe, minigpt_block]
-  presets: [small]
-  iters: 3
-  breadth: 2
-  num_samples: 1
-  topk_candidates: 2
-  topk: 2
-  exp_n: 2
-  max_threshold: 1.01
-  min_threshold: 1.01
-
 pytorch_step_some_small:
-  pipeline: pytorch-step
-  bench_dir: StepBench
   benchmarks: [sdpa, moe]
   presets: [small]
   iters: 3
@@ -306,8 +136,6 @@ pytorch_step_some_small:
   min_threshold: 1.01
 
 pytorch_step_gemm_small:
-  pipeline: pytorch-step
-  bench_dir: StepBench
   benchmarks: [gemm]
   presets: [small]
   iters: 3

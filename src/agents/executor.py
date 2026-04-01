@@ -1,5 +1,4 @@
-# Merged Executor - Direct results collection without logfire
-# Adapted for STeP IR (from NKI version)
+# Executor — parallel LLM proposal generation + sequential STeP profiling with fixup
 
 import os
 import sys
@@ -50,25 +49,12 @@ SEED = 42
 torch.manual_seed(SEED)
 """
 
-# -------------------------- NKI Import Preamble --------------------------
-NKI_IMPORTS = """
-import numpy as np
-import neuronxcc.nki as nki
-import neuronxcc.nki.language as nl
-import neuronxcc.nki.typing as nt
-import neuronxcc.nki.isa as nisa
-from neuronxcc.nki import trace
-from neuronxcc.nki.language import par_dim
-"""
-
 # -------------------------- Config Models --------------------------
 class ExecutorPromptConfig(BaseModel):
     host_problem_path: str = ""
     step_kernel_path: str = ""
     user_template_path: str = ""
     optimization_plan: str = ""
-    middleend_kernel_path: str = ""
-    step_baseline_path: str = ""
     include_baseline: bool = False
     values_json: str = ""
 
@@ -84,8 +70,6 @@ class ExecutorConfig(BaseModel):
     num_samples: int = 4
     user_template_path: str = ""
     profile_mode: str = "cycle_accurate"
-    middleend_kernel_path: str = ""
-    step_baseline_path: str = ""
     include_baseline: bool = False
 
 # -------------------------- Helpers --------------------------
@@ -96,26 +80,6 @@ def construct_executor_prompt(config: ExecutorPromptConfig, executor_experiences
         step_kernel_function = f.read()
     with open(config.user_template_path, "r") as f:
         prompt_template = f.read()
-    if config.middleend_kernel_path:
-        with open(config.middleend_kernel_path, "r") as f:
-            middleend_code = f.read()
-        middleend_block = (
-            "\n# Optimized STeP IR Reference\n"
-            "The following STeP IR kernel was produced by an earlier optimization stage. "
-            "Use it as a reference for optimization direction — it shows which data movement "
-            "and compute patterns were found to be efficient. Your output must still be a "
-            "valid NKI kernel.\n"
-            "```\n"
-            f"{middleend_code}\n"
-            "```"
-        )
-    else:
-        middleend_block = ""
-    if config.step_baseline_path:
-        with open(config.step_baseline_path, "r") as f:
-            step_baseline_code = f.read()
-    else:
-        step_baseline_code = ""
     if config.include_baseline and step_kernel_function:
         baseline_block = (
             "# Baseline STeP IR kernel\n"
@@ -144,89 +108,65 @@ def construct_executor_prompt(config: ExecutorPromptConfig, executor_experiences
         .replace("{kernel_code}", step_kernel_function)
         .replace("{baseline_context}", baseline_block)
         .replace("{optimization_plan}", config.optimization_plan)
-        .replace("{middleend_context}", middleend_block)
-        .replace("{step_baseline_code}", step_baseline_code)
         .replace("{executor_experiences}", executor_experiences_block)
         .replace("{preamble}", preamble_block)
     )
     return user_prompt
 
-def _write_temp_kernel(code: str, baseline_code: str, code_preamble: str = "step",
-                       values_json: str | None = None) -> str:
+def _write_temp_kernel(code: str, baseline_code: str, values_json: str | None = None) -> str:
     fd, temp_path = tempfile.mkstemp(suffix=".py")
     with os.fdopen(fd, "w") as f:
-        if code_preamble == "nki":
-            f.write(NKI_IMPORTS)
+        f.write(STEP_IMPORTS)
+        f.write("\n")
+        # Inject dimension constants (M, K, N, etc.) so the LLM-generated
+        # build_graph() can reference them as module-level variables.
+        if values_json:
+            dims = json.loads(values_json)
+            for k, v in dims.items():
+                f.write(f"{k} = {v!r}\n")
             f.write("\n")
-            f.write(code)
-            f.write("\n")
-        else:
-            f.write(STEP_IMPORTS)
-            f.write("\n")
-            # Inject dimension constants (M, K, N, etc.) so the LLM-generated
-            # build_graph() can reference them as module-level variables.
-            # This is needed when the baseline is not a STeP kernel (e.g.,
-            # NKI baseline in a multi-stage pipeline) and lacks these constants.
-            if values_json:
-                dims = json.loads(values_json)
-                for k, v in dims.items():
-                    f.write(f"{k} = {v!r}\n")
-                f.write("\n")
-            f.write(baseline_code)
-            f.write("\n")
-            f.write(code)
-            f.write("\n")
+        f.write(baseline_code)
+        f.write("\n")
+        f.write(code)
+        f.write("\n")
     return temp_path
 
 # -------------------------- Parallel LLM --------------------------
 async def propose_once(name: str, config: ExecutorPromptConfig, agent: Agent, executor_experiences_block: str = ""):
-    try:
-        user_prompt = construct_executor_prompt(config, executor_experiences_block=executor_experiences_block)
-        if "claude" in agent.model.model.lower():
-            run_config = RunConfig(
-                model_settings=ModelSettings(
-                    temperature=1.0, # Temperature must be 1.0 for reasoning to be enabled
-                    max_tokens=20000,
-                    extra_body={
-                        "thinking": {
-                            "type": "enabled",
-                            "budget_tokens": 10000
-                        }
+    user_prompt = construct_executor_prompt(config, executor_experiences_block=executor_experiences_block)
+    if "claude" in agent.model.model.lower():
+        run_config = RunConfig(
+            model_settings=ModelSettings(
+                temperature=1.0, # Temperature must be 1.0 for reasoning to be enabled
+                max_tokens=20000,
+                extra_body={
+                    "thinking": {
+                        "type": "enabled",
+                        "budget_tokens": 10000
                     }
-                )
+                }
             )
-        else:
-            run_config = None
-        result = await retry_runner_safer(agent, user_prompt, run_config=run_config, max_retries=15, delay=10)
-        if result is None:
-            logger.warning("[propose_once] %s: retry_runner_safer returned None", name)
-            return None
-        logger.info("[propose_once] %s: final_output type=%s len=%d, new_items=%d",
-                    name, type(result.final_output).__name__, len(result.final_output) if result.final_output else 0,
-                    len(result.new_items) if result.new_items else 0)
-        for idx, item in enumerate(result.new_items or []):
-            logger.info("[propose_once] %s: new_items[%d] type=%s: %s",
-                        name, idx, type(item).__name__, str(item)[:500])
-        code = extract_first_code(result.final_output, ["python"])
-        if not code:
-            logger.warning("[propose_once] %s: extract_first_code found no code block. Full response:\n%s",
-                           name, result.final_output)
-            return None
-        return {"name": name, "result": result, "code": code}
-    except asyncio.TimeoutError:
-        logger.warning("LLM timed out for %s", name)
+        )
+    else:
+        run_config = None
+    result = await retry_runner_safer(agent, user_prompt, run_config=run_config, max_retries=15, delay=10)
+    assert result is not None, f"retry_runner_safer returned None for {name}"
+    logger.info("[propose_once] %s: final_output type=%s len=%d, new_items=%d",
+                name, type(result.final_output).__name__, len(result.final_output) if result.final_output else 0,
+                len(result.new_items) if result.new_items else 0)
+    for idx, item in enumerate(result.new_items or []):
+        logger.info("[propose_once] %s: new_items[%d] type=%s: %s",
+                    name, idx, type(item).__name__, str(item)[:500])
+    code = extract_first_code(result.final_output, ["python"])
+    if not code:
+        logger.warning("[propose_once] %s: extract_first_code found no code block. Full response:\n%s",
+                       name, result.final_output)
         return None
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.exception("propose_once failed for %s", name)
-        return None
+    return {"name": name, "result": result, "code": code}
 
-# ---------- Stage 1: parallel LLM (async) ----------
 async def stage1_gather_proposals(service_name: str, pconfig: ExecutorPromptConfig, base_agent: Agent, num_samples: int, executor_experiences_block: str = ""):
     tasks = []
     for i in range(num_samples):
-        # fresh agent per task to avoid cross-cancellation
         agent = Agent(name=f"Executor_{i}", instructions=base_agent.instructions, model=base_agent.model)
         tasks.append(asyncio.create_task(propose_once(f"{service_name}_{i}", pconfig, agent, executor_experiences_block=executor_experiences_block)))
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -236,45 +176,23 @@ def _profile_worker(program_path, problem_path, profile_mode, result_path, dims=
                     machine_config_path=None, machine_config_preset="default"):
     """Profile a STeP kernel. Runs in a subprocess for isolation."""
     import json, traceback
-    try:
-        from src.step_kernel_wrapper import StepKernel, ProfileMode
+    from src.step_kernel_wrapper import StepKernel, ProfileMode
 
-        with open(program_path) as f:
-            code = f.read()
+    with open(program_path) as f:
+        code = f.read()
 
-        mode = ProfileMode.SYMBOLIC if profile_mode == "symbolic" else ProfileMode.CYCLE_ACCURATE
-        kernel = StepKernel(step_code=code, problem_path=problem_path, profile_mode=mode, dims=dims,
-                           machine_config_path=machine_config_path, machine_config_preset=machine_config_preset)
-        result = kernel.profile()
+    mode = ProfileMode.SYMBOLIC if profile_mode == "symbolic" else ProfileMode.CYCLE_ACCURATE
+    kernel = StepKernel(step_code=code, problem_path=problem_path, profile_mode=mode, dims=dims,
+                       machine_config_path=machine_config_path, machine_config_preset=machine_config_preset)
+    result = kernel.profile()
 
-        with open(result_path, "w") as f:
-            json.dump({
-                "compiled": result.compiled,
-                "runnable": result.runnable,
-                "correct": result.correct,
-                "metadata": result.metadata,
-            }, f)
-    except Exception:
-        with open(result_path, "w") as f:
-            json.dump({
-                "compiled": False, "runnable": False, "correct": False,
-                "metadata": {"compilation_error": traceback.format_exc()},
-            }, f)
-
-def _nki_profile_worker(program_path, base_numpy_path, result_path, rel_tol):
-    """Profile an NKI kernel. Runs in a subprocess for isolation."""
-    import json, traceback
-    try:
-        from src.nki_kernel_wrapper import NKIKernel
-        k = NKIKernel(program_path, base_numpy_path)
-        k.rel_tol = rel_tol
-        k.profile([])
-        out = {"compiled": k.res.compiled, "runnable": k.res.runnable, "correct": k.res.correct, "metadata": k.res.metadata or {}}
-    except Exception:
-        out = {"compiled": False, "runnable": False, "correct": False,
-               "metadata": {"compilation_error": traceback.format_exc()}}
     with open(result_path, "w") as f:
-        json.dump(out, f)
+        json.dump({
+            "compiled": result.compiled,
+            "runnable": result.runnable,
+            "correct": result.correct,
+            "metadata": result.metadata,
+        }, f)
 
 def profile_with_hard_timeout_sync(program_path: str, problem_path: str, profile_mode: str, timeout_sec: int, dims: dict | None = None,
                                    machine_config_path: str | None = None, machine_config_preset: str = "default") -> dict:
@@ -295,23 +213,6 @@ def profile_with_hard_timeout_sync(program_path: str, problem_path: str, profile
     except Exception:
         return {"compiled": False, "runnable": False, "correct": False,
                 "metadata": {"compilation_error": traceback.format_exc()}}
-    finally:
-        with contextlib.suppress(Exception): os.remove(result_path)
-
-def nki_profile_with_hard_timeout_sync(program_path: str, base_numpy_path: str, rel_tol: float, timeout_sec: int) -> dict:
-    fd, result_path = tempfile.mkstemp(prefix="nki_profile_", suffix=".json"); os.close(fd)
-    p = mp.Process(target=_nki_profile_worker, args=(program_path, base_numpy_path, result_path, rel_tol), daemon=True)
-    p.start(); p.join(timeout_sec)
-    try:
-        if p.is_alive():
-            p.terminate(); p.join(5)
-            return {"compiled": False, "runnable": False, "correct": False,
-                    "metadata": {"compilation_error": f"Hard timeout after {timeout_sec}s"}}
-        if p.exitcode != 0:
-            return {"compiled": False, "runnable": False, "correct": False,
-                    "metadata": {"compilation_error": f"Worker process crashed with exit code {p.exitcode}"}}
-        with open(result_path) as f:
-            return json.load(f)
     finally:
         with contextlib.suppress(Exception): os.remove(result_path)
 
@@ -336,11 +237,7 @@ def format_errors_for_fixup(metadata: dict, code: str | None = None, preamble_li
 
 
 def _extract_code_line_ref(tb: str, code: str | None, preamble_line_count: int = 0) -> str:
-    """Parse traceback to find the last frame inside the generated code and return ' (line N)'.
-
-    Traceback line numbers refer to the full temp file (preamble + body).
-    We subtract *preamble_line_count* to get the line number within *code*.
-    """
+    """Parse traceback to find the last frame inside the generated code and return ' (line N)'."""
     if not code:
         return ""
     import re
@@ -374,10 +271,8 @@ def _filter_traceback_to_code(tb: str, code: str | None, preamble_line_count: in
     return "\n".join(result) if result else ""
 
 
-def _compute_preamble_line_count(baseline_code: str, code_preamble: str, values_json: str | None) -> int:
+def _compute_preamble_line_count(baseline_code: str, values_json: str | None) -> int:
     """Count how many lines precede the body code in the temp file built by _write_temp_kernel."""
-    if code_preamble == "nki":
-        return NKI_IMPORTS.count("\n") + 1  # imports + trailing newline
     count = STEP_IMPORTS.count("\n") + 1  # imports + trailing newline
     if values_json:
         dims = json.loads(values_json)
@@ -391,30 +286,29 @@ def _fixup_sync(original_code, errors, system_prompt, fixup_template_path, model
     """Run fix-up LLM call in a subprocess. Returns fixed code string, or None on failure."""
     fd, result_path = tempfile.mkstemp(prefix="fixup_", suffix=".json"); os.close(fd)
     fd2, prompt_path = tempfile.mkstemp(prefix="fixup_prompt_", suffix=".txt"); os.close(fd2)
-    try:
+    with open(fixup_template_path, "r") as f:
+        template = f.read()
+    # Add line numbers to help the LLM locate errors
+    numbered_code = "\n".join(
+        f"{i+1:4d} | {line}" for i, line in enumerate(original_code.splitlines())
+    )
+    operator_ref_path = os.path.join(os.path.dirname(fixup_template_path), "operator_reference.txt")
+    with open(operator_ref_path, "r") as f:
+        operator_reference = f.read()
+    user_prompt = template.replace("{generated_code}", numbered_code).replace("{error_list}", errors).replace("{operator_reference}", operator_reference)
+    # Log fixup prompts to checkpoint directory
+    if prompts_dir is not None:
+        fixup_dir = prompts_dir.parent / "fixup_prompts"
+        fixup_dir.mkdir(parents=True, exist_ok=True)
+        suffix = f"_{proposal_name}" if proposal_name else ""
+        (fixup_dir / f"system_prompt{suffix}.txt").write_text(system_prompt)
+        (fixup_dir / f"user_prompt{suffix}.txt").write_text(user_prompt)
         with open(fixup_template_path, "r") as f:
-            template = f.read()
-        # Add line numbers to help the LLM locate errors
-        numbered_code = "\n".join(
-            f"{i+1:4d} | {line}" for i, line in enumerate(original_code.splitlines())
-        )
-        operator_ref_path = os.path.join(os.path.dirname(fixup_template_path), "operator_reference.txt")
-        with open(operator_ref_path, "r") as f:
-            operator_reference = f.read()
-        user_prompt = template.replace("{generated_code}", numbered_code).replace("{error_list}", errors).replace("{operator_reference}", operator_reference)
-        # Log fixup prompts to checkpoint directory
-        if prompts_dir is not None:
-            fixup_dir = prompts_dir.parent / "fixup_prompts"
-            fixup_dir.mkdir(parents=True, exist_ok=True)
-            suffix = f"_{proposal_name}" if proposal_name else ""
-            (fixup_dir / f"system_prompt{suffix}.txt").write_text(system_prompt)
-            (fixup_dir / f"user_prompt{suffix}.txt").write_text(user_prompt)
-            with open(fixup_template_path, "r") as f:
-                (fixup_dir / "fixup_template.txt").write_text(f.read())
-        with open(prompt_path, "w") as f:
-            json.dump({"system_prompt": system_prompt, "user_prompt": user_prompt}, f)
-        import subprocess as sp
-        script = f"""
+            (fixup_dir / "fixup_template.txt").write_text(f.read())
+    with open(prompt_path, "w") as f:
+        json.dump({"system_prompt": system_prompt, "user_prompt": user_prompt}, f)
+    import subprocess as sp
+    script = f"""
 import json, sys, asyncio
 sys.path.insert(0, '.')
 from src.utils import extract_first_code
@@ -440,19 +334,16 @@ code = asyncio.run(run())
 with open('{result_path}', 'w') as f:
     json.dump({{"code": code}}, f)
 """
-        sp.run([sys.executable, "-c", script], check=False, timeout=120, cwd=os.environ.get("ACCELOPT_BASE_DIR", "."))
-        with open(result_path) as f:
-            result = json.load(f)
-        return result.get("code")
-    except Exception:
-        logger.warning("Fix-up LLM call failed: %s", traceback.format_exc())
-        return None
-    finally:
-        with contextlib.suppress(Exception): os.remove(result_path)
-        with contextlib.suppress(Exception): os.remove(prompt_path)
+    sp.run([sys.executable, "-c", script], check=False, timeout=120, cwd=os.environ.get("ACCELOPT_BASE_DIR", "."))
+    with open(result_path) as f:
+        result = json.load(f)
+    code = result.get("code")
+    with contextlib.suppress(Exception): os.remove(result_path)
+    with contextlib.suppress(Exception): os.remove(prompt_path)
+    return code
 
-# ---------- Stage 2: sequential profiling with result collection ----------
-def stage2_profile_and_collect(
+# ---------- Profile and collect results ----------
+def profile_and_collect(
     proposals: list[dict],
     baseline_props: StepKernelProperties,
     case_config: ExecutorConfig,
@@ -460,9 +351,6 @@ def stage2_profile_and_collect(
     per_profile_timeout: int = 900,
     machine_config_path: str | None = None,
     machine_config_preset: str = "default",
-    profiler: str = "step",
-    speedup_metric: str = "cycles",
-    code_preamble: str = "step",
     rel_tol: float = 2e-5,
     fixup_template_path: str | None = None,
     model_config_path: str | None = None,
@@ -484,22 +372,54 @@ def stage2_profile_and_collect(
         }
 
         temp_path = None
-        try:
-            start = time.monotonic()
-            print(f"[Stage2] START name={name} case={base_spec['case_name']} timeout={per_profile_timeout}s")
-            temp_path = _write_temp_kernel(code, base_spec["baseline_code"], code_preamble=code_preamble,
-                                          values_json=base_spec.get("values"))
-            if profiler == "nki":
-                kp = nki_profile_with_hard_timeout_sync(
-                    program_path=temp_path,
-                    base_numpy_path=base_spec.get("problem_path", ""),
-                    rel_tol=rel_tol,
-                    timeout_sec=per_profile_timeout,
+        start = time.monotonic()
+        print(f"[Profile] START name={name} case={base_spec['case_name']} timeout={per_profile_timeout}s")
+        temp_path = _write_temp_kernel(code, base_spec["baseline_code"],
+                                      values_json=base_spec.get("values"))
+        dims = json.loads(base_spec["values"]) if base_spec.get("values") else None
+        kp = profile_with_hard_timeout_sync(
+            program_path=temp_path,
+            problem_path=base_spec.get("problem_path", ""),
+            profile_mode=case_config.profile_mode,
+            timeout_sec=per_profile_timeout,
+            dims=dims,
+            machine_config_path=machine_config_path,
+            machine_config_preset=machine_config_preset,
+        )
+
+        # --- Fix-up loop (retries until no build/syntax error) ---
+        MAX_FIXUP_ATTEMPTS = 3
+        original_code = code
+        fixup_attempted = False
+        preamble_lc = _compute_preamble_line_count(
+            base_spec["baseline_code"], base_spec.get("values"),
+        )
+        if fixup_template_path and model_config_path:
+            for fixup_round in range(MAX_FIXUP_ATTEMPTS):
+                metadata = kp.get("metadata", {})
+                has_build_error = metadata.get("build_error")
+                has_constraint = metadata.get("constraint_violations")
+                if kp.get("correct", False) or not (has_build_error or has_constraint):
+                    break
+                fixup_attempted = True
+                error_desc = format_errors_for_fixup(metadata, code=code, preamble_line_count=preamble_lc)
+                logger.info("[Fixup] Attempt %d/%d for %s: %s",
+                            fixup_round + 1, MAX_FIXUP_ATTEMPTS, name, error_desc[:200])
+                fixed_code = _fixup_sync(
+                    code, error_desc, case_config.system_prompt,
+                    fixup_template_path, model_config_path,
+                    prompts_dir=prompts_dir,
+                    proposal_name=f"{name}_round{fixup_round}",
                 )
-            else:
-                dims = json.loads(base_spec["values"]) if base_spec.get("values") else None
+                if not fixed_code:
+                    logger.info("[Fixup] LLM returned no code on attempt %d for %s", fixup_round + 1, name)
+                    break
+                temp_path_fixed = _write_temp_kernel(
+                    fixed_code, base_spec["baseline_code"],
+                    values_json=base_spec.get("values"),
+                )
                 kp = profile_with_hard_timeout_sync(
-                    program_path=temp_path,
+                    program_path=temp_path_fixed,
                     problem_path=base_spec.get("problem_path", ""),
                     profile_mode=case_config.profile_mode,
                     timeout_sec=per_profile_timeout,
@@ -507,137 +427,60 @@ def stage2_profile_and_collect(
                     machine_config_path=machine_config_path,
                     machine_config_preset=machine_config_preset,
                 )
+                with contextlib.suppress(Exception): os.remove(temp_path_fixed)
+                # Always adopt the fixed code — it's the latest attempt
+                code = fixed_code
+                if kp.get("correct", False):
+                    logger.info("[Fixup] Fix-up succeeded on attempt %d for %s", fixup_round + 1, name)
+                    break
+                logger.info("[Fixup] Attempt %d still has errors for %s", fixup_round + 1, name)
 
-            # --- Fix-up loop for step profiler (retries until no build/syntax error) ---
-            MAX_FIXUP_ATTEMPTS = 3
-            original_code = code
-            fixup_attempted = False
-            preamble_lc = _compute_preamble_line_count(
-                base_spec["baseline_code"], code_preamble, base_spec.get("values"),
-            )
-            if profiler == "step" and fixup_template_path and model_config_path:
-                for fixup_round in range(MAX_FIXUP_ATTEMPTS):
-                    metadata = kp.get("metadata", {})
-                    has_build_error = metadata.get("build_error")
-                    has_constraint = metadata.get("constraint_violations")
-                    if kp.get("correct", False) or not (has_build_error or has_constraint):
-                        break
-                    fixup_attempted = True
-                    error_desc = format_errors_for_fixup(metadata, code=code, preamble_line_count=preamble_lc)
-                    logger.info("[Fixup] Attempt %d/%d for %s: %s",
-                                fixup_round + 1, MAX_FIXUP_ATTEMPTS, name, error_desc[:200])
-                    fixed_code = _fixup_sync(
-                        code, error_desc, case_config.system_prompt,
-                        fixup_template_path, model_config_path,
-                        prompts_dir=prompts_dir,
-                        proposal_name=f"{name}_round{fixup_round}",
-                    )
-                    if not fixed_code:
-                        logger.info("[Fixup] LLM returned no code on attempt %d for %s", fixup_round + 1, name)
-                        break
-                    temp_path_fixed = _write_temp_kernel(
-                        fixed_code, base_spec["baseline_code"],
-                        code_preamble=code_preamble,
-                        values_json=base_spec.get("values"),
-                    )
-                    try:
-                        dims = json.loads(base_spec["values"]) if base_spec.get("values") else None
-                        kp = profile_with_hard_timeout_sync(
-                            program_path=temp_path_fixed,
-                            problem_path=base_spec.get("problem_path", ""),
-                            profile_mode=case_config.profile_mode,
-                            timeout_sec=per_profile_timeout,
-                            dims=dims,
-                            machine_config_path=machine_config_path,
-                            machine_config_preset=machine_config_preset,
-                        )
-                    finally:
-                        with contextlib.suppress(Exception): os.remove(temp_path_fixed)
-                    # Always adopt the fixed code — it's the latest attempt
-                    code = fixed_code
-                    if kp.get("correct", False):
-                        logger.info("[Fixup] Fix-up succeeded on attempt %d for %s", fixup_round + 1, name)
-                        break
-                    logger.info("[Fixup] Attempt %d still has errors for %s", fixup_round + 1, name)
+        record_result = {
+            "body": code,
+            "spec_code": spec["spec_code"],
+            "baseline": spec["baseline_code"],
+            "problem": spec["problem"],
+            "values": spec["values"],
+            "kernel_metadata": json.dumps(kp.get("metadata", {})),
+            "baseline_metadata": spec["baseline_metadata"],
+        }
+        if fixup_attempted:
+            record_result["original_body"] = original_code
 
-            record_result = {
-                "body": code,
-                "spec_code": spec["spec_code"],
-                "baseline": spec["baseline_code"],
-                "problem": spec["problem"],
-                "values": spec["values"],
-                "kernel_metadata": json.dumps(kp.get("metadata", {})),
-                "baseline_metadata": spec["baseline_metadata"],
-            }
-            if fixup_attempted:
-                record_result["original_body"] = original_code
-
-            # Check if there were errors
-            if not kp.get("compiled", False) or not kp.get("runnable", False) or not kp.get("correct", False):
-                metadata = kp.get("metadata", {})
-                error_msg = (metadata.get("compilation_error") or
-                           metadata.get("correctness_error") or
-                           metadata.get("run_error") or
-                           metadata.get("build_error") or
-                           "Unknown error")
-                record_result["error"] = error_msg
+        # Check if there were errors
+        if not kp.get("compiled", False) or not kp.get("runnable", False) or not kp.get("correct", False):
+            metadata = kp.get("metadata", {})
+            error_msg = (metadata.get("compilation_error") or
+                       metadata.get("correctness_error") or
+                       metadata.get("run_error") or
+                       metadata.get("build_error") or
+                       "Unknown error")
+            record_result["error"] = error_msg
+        else:
+            # Success — add STeP metrics
+            metadata = kp.get("metadata", {})
+            record_result["off_chip_bytes"] = metadata.get("off_chip_bytes")
+            record_result["on_chip_bytes"] = metadata.get("on_chip_bytes")
+            record_result["cycles"] = metadata.get("cycles")
+            record_result["off_chip_expr"] = metadata.get("off_chip_expr")
+            record_result["on_chip_expr"] = metadata.get("on_chip_expr")
+            # Compute speedup (baseline_cycles / candidate_cycles)
+            baseline_cycles = (baseline_props.metadata or {}).get("cycles")
+            candidate_cycles = metadata.get("cycles")
+            if baseline_cycles and candidate_cycles:
+                record_result["speedup"] = baseline_cycles / candidate_cycles
             else:
-                metadata = kp.get("metadata", {})
-                if speedup_metric == "latency":
-                    # Success case - add NKI metrics
-                    record_result["latency"] = metadata.get("latency")
-                    bl = (baseline_props.metadata or {}).get("latency")
-                    cl = metadata.get("latency")
-                    if bl and cl:
-                        record_result["speedup"] = bl / cl
-                    else:
-                        record_result["speedup"] = None
-                    # Percentage-of-peak analysis
-                    from src.theoretical_peak import calc_theoretical_peak
-                    peak = calc_theoretical_peak(base_spec["problem"], json.loads(base_spec["values"]))
-                    if peak:
-                        record_result["theoretical_peak_latency_ms"] = peak["theoretical_peak_latency"]
-                        record_result["bottleneck"] = peak["bound_key"]
-                        if cl:
-                            record_result["pct_of_peak"] = peak["theoretical_peak_latency"] / cl
-                        if bl:
-                            record_result["baseline_pct_of_peak"] = peak["theoretical_peak_latency"] / bl
-                else:
-                    # Success case - add STeP metrics
-                    record_result["off_chip_bytes"] = metadata.get("off_chip_bytes")
-                    record_result["on_chip_bytes"] = metadata.get("on_chip_bytes")
-                    record_result["cycles"] = metadata.get("cycles")
-                    record_result["off_chip_expr"] = metadata.get("off_chip_expr")
-                    record_result["on_chip_expr"] = metadata.get("on_chip_expr")
-                    # Compute speedup (baseline_cycles / candidate_cycles)
-                    baseline_cycles = (baseline_props.metadata or {}).get("cycles")
-                    candidate_cycles = metadata.get("cycles")
-                    if baseline_cycles and candidate_cycles:
-                        record_result["speedup"] = baseline_cycles / candidate_cycles
-                    else:
-                        record_result["speedup"] = None
+                record_result["speedup"] = None
 
-            elapsed = time.monotonic() - start
-            print(f"[Stage2] END name={name} case={base_spec['case_name']} elapsed={elapsed}s")
-            results.append(record_result)
-            if record_result.get("error", None) and "Hard timeout" in record_result["error"]:
-                print(f"[Stage2] BREAK name={name} case={base_spec['case_name']} elapsed={elapsed}s")
-                break
-        except Exception as e:
-            logger.error(f"[Profile Error] {name}: {e}")
-            error_result = {
-                "error": str(e),
-                "body": code,
-                "spec_code": spec["spec_code"],
-                "baseline": spec["baseline_code"],
-                "problem": spec["problem"],
-                "values": spec["values"]
-            }
-            results.append(error_result)
-        finally:
-            if temp_path:
-                with contextlib.suppress(Exception):
-                    os.remove(temp_path)
+        elapsed = time.monotonic() - start
+        print(f"[Profile] END name={name} case={base_spec['case_name']} elapsed={elapsed}s")
+        results.append(record_result)
+        if record_result.get("error", None) and "Hard timeout" in record_result["error"]:
+            print(f"[Profile] BREAK name={name} case={base_spec['case_name']} elapsed={elapsed}s")
+            break
+        if temp_path:
+            with contextlib.suppress(Exception):
+                os.remove(temp_path)
 
     return results
 
@@ -649,9 +492,6 @@ async def process_single_service_plan(
     base_spec: dict,
     machine_config_path: str | None = None,
     machine_config_preset: str = "default",
-    profiler: str = "step",
-    speedup_metric: str = "cycles",
-    code_preamble: str = "step",
     rel_tol: float = 2e-5,
     per_profile_timeout: int = 600,
     prompts_dir: Path | None = None,
@@ -679,8 +519,6 @@ async def process_single_service_plan(
         step_kernel_path=case_config.kernel_path,
         user_template_path=case_config.user_template_path,
         optimization_plan=case_config.optimization_plan,
-        middleend_kernel_path=case_config.middleend_kernel_path,
-        step_baseline_path=case_config.step_baseline_path,
         include_baseline=case_config.include_baseline,
         values_json=case_config.values,
     )
@@ -695,10 +533,9 @@ async def process_single_service_plan(
     proposals = await stage1_gather_proposals(case_config.service_name, pconfig, agent, case_config.num_samples, executor_experiences_block=executor_experiences_block)
 
     # 2) Sequential profiling with result collection
-    results = stage2_profile_and_collect(proposals, baseline_props, case_config, base_spec, per_profile_timeout=per_profile_timeout,
+    results = profile_and_collect(proposals, baseline_props, case_config, base_spec, per_profile_timeout=per_profile_timeout,
                                         machine_config_path=machine_config_path, machine_config_preset=machine_config_preset,
-                                        profiler=profiler, speedup_metric=speedup_metric,
-                                        code_preamble=code_preamble, rel_tol=rel_tol,
+                                        rel_tol=rel_tol,
                                         fixup_template_path=fixup_template_path, model_config_path=model_config_path,
                                         prompts_dir=prompts_dir)
 
@@ -706,21 +543,11 @@ async def process_single_service_plan(
 
 # -------------------------- Driver --------------------------
 async def main(args):
-    # time record (start)
     os.makedirs(args.exp_dir, exist_ok=True)
     start_time = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
 
-    # load inputs and substitute machine config placeholders
-    from src.pipeline_registry import resolve_pipeline
-    pipeline = resolve_pipeline(args.pipeline)
-    if args.stage_config:
-        pipeline = {**pipeline, **json.loads(args.stage_config)}
-
-    if pipeline["needs_machine_config"]:
-        from src.step_kernel_wrapper import load_machine_config, apply_prompt_substitutions
-        mc = load_machine_config(path=args.machine_config_path, preset=args.machine_config_preset)
-    else:
-        mc = None
+    from src.step_kernel_wrapper import load_machine_config, apply_prompt_substitutions
+    mc = load_machine_config(path=args.machine_config_path, preset=args.machine_config_preset)
 
     with open(args.base_prompt_path, "r") as f:
         system_prompt = f.read()
@@ -762,7 +589,6 @@ async def main(args):
     # Collect all results
     output_list = []
 
-    # iterate services
     for _, row in problems.iterrows():
         service_name = row["service_name"]
         logfire.configure(service_name=service_name)
@@ -777,14 +603,6 @@ async def main(args):
             spec_code = f.read()
         with open(row["kernel"], "r") as f:
             baseline_code = f.read()
-
-        middleend_kernel_path = row.get("middleend_kernel", "")
-        if pd.isna(middleend_kernel_path):
-            middleend_kernel_path = ""
-
-        step_baseline_path = row.get("step_baseline", "")
-        if pd.isna(step_baseline_path):
-            step_baseline_path = ""
 
         base_spec = {
             "problem": row["problem"],
@@ -811,8 +629,6 @@ async def main(args):
                 num_samples=args.num_samples,
                 user_template_path=args.user_template_path,
                 profile_mode=args.profile_mode,
-                middleend_kernel_path=middleend_kernel_path,
-                step_baseline_path=step_baseline_path,
                 include_baseline=args.include_baseline,
             )
 
@@ -820,9 +636,6 @@ async def main(args):
                 process_single_service_plan(case_config, baseline_props, model, base_spec,
                                            machine_config_path=args.machine_config_path,
                                            machine_config_preset=args.machine_config_preset,
-                                           profiler=pipeline["profiler"],
-                                           speedup_metric=pipeline["speedup_metric"],
-                                           code_preamble=pipeline["code_preamble"],
                                            rel_tol=args.rel_tol,
                                            per_profile_timeout=args.per_profile_timeout,
                                            prompts_dir=executor_prompts_dir,
@@ -901,16 +714,14 @@ if __name__ == "__main__":
     parser.add_argument("--model_config_path", type=str, required=True)
     parser.add_argument("--output_path", type=str, required=True)
     parser.add_argument("--exp_date", type=str, required=True)
-    parser.add_argument("--read_token", type=str, default="unused")  # For compatibility
-    parser.add_argument("--machine_config_path", type=str, default=None, help="Path to machine_config.yaml")
-    parser.add_argument("--machine_config_preset", type=str, default="default", help="Preset name in machine_config.yaml")
-    parser.add_argument("--pipeline", type=str, default="pytorch-step")
-    parser.add_argument("--rel_tol", type=float, default=2e-5, help="Relative tolerance for NKI correctness checks")
-    parser.add_argument("--stage_config", type=str, default=None, help="JSON dict of pipeline overrides for multi-stage execution")
-    parser.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
-    parser.add_argument("--per_profile_timeout", type=int, default=600, help="Hard timeout in seconds for each profile compilation/run")
-    parser.add_argument("--include_baseline", action="store_true", help="Include baseline kernel code in prompts")
-    parser.add_argument("--executor_experience_path", type=str, default=None, help="Path to executor experiences JSON file")
+    parser.add_argument("--read_token", type=str, default="unused")
+    parser.add_argument("--machine_config_path", type=str, default=None)
+    parser.add_argument("--machine_config_preset", type=str, default="default")
+    parser.add_argument("--rel_tol", type=float, default=2e-5)
+    parser.add_argument("--log_file", type=str, default=None)
+    parser.add_argument("--per_profile_timeout", type=int, default=600)
+    parser.add_argument("--include_baseline", action="store_true")
+    parser.add_argument("--executor_experience_path", type=str, default=None)
     args = parser.parse_args()
 
     if args.log_file:

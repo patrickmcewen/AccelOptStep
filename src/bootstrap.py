@@ -1,4 +1,4 @@
-"""Environment bootstrap — neuron venv, Docker/STeP cache, PYTHONPATH setup."""
+"""Environment bootstrap — Docker/STeP cache, PYTHONPATH setup."""
 
 import os
 import shutil
@@ -8,32 +8,10 @@ from pathlib import Path
 
 import yaml
 
-NEURON_VENV_PYTHON = "/opt/aws_neuronx_venv_pytorch_2_7/bin/python3"
 STEP_DOCKER_IMAGE = "step_artifact"
 STEP_CACHE_DIR = Path.home() / ".cache" / "acceloptstep" / "step_artifact_src"
 STEP_SRC_IN_CONTAINER = "/root/step_artifact/src"
 STEP_PERF_IN_CONTAINER = "/root/step_artifact/step-perf"
-
-
-def ensure_neuron_venv():
-    """Re-exec under the Neuron venv Python if not already there.
-
-    All pipelines run on the host under the Neuron venv, which has the full
-    dependency set (pandas, torch, neuronxcc, etc.). STeP-specific deps
-    (step_py, step_perf) are added to PYTHONPATH later by setup_environment().
-    """
-    target = Path(NEURON_VENV_PYTHON)
-    target_prefix = str(target.parent.parent)  # /opt/aws_neuronx_venv_pytorch_2_7
-    if sys.prefix == target_prefix:
-        return
-
-    assert target.exists(), (
-        f"Neuron venv Python not found at {NEURON_VENV_PYTHON}. "
-        f"Install the AWS Neuron SDK or update NEURON_VENV_PYTHON."
-    )
-
-    print(f">>> Re-executing under Neuron venv Python ({NEURON_VENV_PYTHON})...", flush=True)
-    os.execv(str(target), [str(target)] + sys.argv)
 
 
 def load_config(config_path: str, preset: str) -> dict:
@@ -125,15 +103,8 @@ def _ensure_step_perf_installed(python: str) -> None:
     print("    step_perf installed.")
 
 
-def setup_environment(script_dir: Path, cfg: dict, pipeline: dict):
-    """Set ACCELOPT_BASE_DIR, PYTHONPATH, and ensure all dependencies are available.
-
-    For pipelines that need STeP: caches step_artifact sources from Docker and
-    ensures step_perf is built for the host Python.
-    NKI re-exec is handled at module load time by ensure_neuron_venv().
-    """
-    needs_step = pipeline["middleend"] == "step" or pipeline["backend"] == "step"
-
+def setup_environment(script_dir: Path, cfg: dict):
+    """Set ACCELOPT_BASE_DIR, PYTHONPATH, and ensure STeP dependencies are available."""
     os.environ["ACCELOPT_BASE_DIR"] = str(script_dir)
 
     if not cfg.get("logfire_enabled", True):
@@ -141,11 +112,9 @@ def setup_environment(script_dir: Path, cfg: dict, pipeline: dict):
 
     # Determine step_artifact_src path
     step_artifact_src = cfg.get("step_artifact_src")
-    if step_artifact_src is None and needs_step:
+    if step_artifact_src is None:
         step_artifact_src = str(_ensure_step_artifact_cached())
         _ensure_step_perf_installed(sys.executable)
-    elif step_artifact_src is None:
-        step_artifact_src = str((script_dir / ".." / "step_artifact" / "src").resolve())
 
     existing = os.environ.get("PYTHONPATH", "")
     additions = [str(script_dir), step_artifact_src, f"{step_artifact_src}/step_py", f"{step_artifact_src}/sim", f"{step_artifact_src}/proto"]

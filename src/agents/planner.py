@@ -17,8 +17,6 @@ class UserPromptConfig(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
     problem_code: str = ""
     kernel_code: str = ""
-    middleend_code: str = ""
-    step_baseline_code: str = ""
     profile_str: str = ""
     prompt_template_path: str = ""
     displayed_profiles_path: str = ""
@@ -47,21 +45,6 @@ def construct_user_prompt(user_prompt_config: UserPromptConfig):
         baseline_block = ""
     user_prompt = user_prompt.replace("{baseline_context}", baseline_block)
     user_prompt = user_prompt.replace("{profile}", user_prompt_config.profile_str)
-    if user_prompt_config.middleend_code:
-        middleend_block = (
-            "\n# Optimized STeP IR Reference\n"
-            "The following STeP IR kernel was produced by an earlier optimization stage. "
-            "Use it as a reference for optimization direction — it shows which data movement "
-            "and compute patterns were found to be efficient. Your output must still be a "
-            "valid NKI kernel.\n"
-            "```\n"
-            f"{user_prompt_config.middleend_code}\n"
-            "```"
-        )
-    else:
-        middleend_block = ""
-    user_prompt = user_prompt.replace("{middleend_context}", middleend_block)
-    user_prompt = user_prompt.replace("{step_baseline_code}", user_prompt_config.step_baseline_code)
     if user_prompt_config.machine_config:
         from src.step_kernel_wrapper import apply_prompt_substitutions
         user_prompt = apply_prompt_substitutions(user_prompt, user_prompt_config.machine_config)
@@ -92,12 +75,6 @@ async def single_query(single_record, agent, user_prompt_config: UserPromptConfi
     config_copy.profile_str = profile_str
     config_copy.problem_code = open(single_record["task"], "r").read()
     config_copy.kernel_code = open(single_record["kernel"], "r").read()
-    middleend_kernel_path = single_record.get("middleend_kernel")
-    if middleend_kernel_path and pd.notna(middleend_kernel_path):
-        config_copy.middleend_code = open(middleend_kernel_path, "r").read()
-    step_baseline_path = single_record.get("step_baseline")
-    if step_baseline_path and pd.notna(step_baseline_path):
-        config_copy.step_baseline_code = open(step_baseline_path, "r").read()
     user_prompt = construct_user_prompt(config_copy)
     if prompts_dir is not None:
         service_name = single_record["service_name"]
@@ -156,8 +133,6 @@ if __name__ == "__main__":
     parser.add_argument("--machine_config_path", type=str, default=None, help="Path to machine_config.yaml")
     parser.add_argument("--machine_config_preset", type=str, default="default", help="Preset name in machine_config.yaml")
     parser.add_argument("--log_file", type=str, default=None, help="Path to per-problem debug log file")
-    parser.add_argument("--pipeline", type=str, default="pytorch-step")
-    parser.add_argument("--stage_config", type=str, default=None, help="JSON dict of pipeline overrides for multi-stage execution")
     parser.add_argument("--include_baseline", action="store_true", help="Include baseline kernel code in prompts")
     args = parser.parse_args()
 
@@ -187,17 +162,8 @@ if __name__ == "__main__":
     with open(time_record_path, "w") as f:
         f.write(f"{current_time},")
 
-    from src.pipeline_registry import resolve_pipeline
-    pipeline = resolve_pipeline(args.pipeline)
-    if args.stage_config:
-        import json as _json
-        pipeline = {**pipeline, **_json.loads(args.stage_config)}
-
-    if pipeline["needs_machine_config"]:
-        from src.step_kernel_wrapper import load_machine_config
-        mc = load_machine_config(path=args.machine_config_path, preset=args.machine_config_preset)
-    else:
-        mc = None
+    from src.step_kernel_wrapper import load_machine_config
+    mc = load_machine_config(path=args.machine_config_path, preset=args.machine_config_preset)
 
     df = pd.read_csv(profile_result_path)
     row_data_list = df.to_dict(orient="records")
